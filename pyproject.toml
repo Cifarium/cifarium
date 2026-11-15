@@ -28,3 +28,5 @@ packages = ["src/cifarium"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["e2e: starts the installed Chrome; needs the network on the first run"]
+addopts = "-m 'not e2e'"
