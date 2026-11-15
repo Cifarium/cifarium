@@ -1,9 +1,10 @@
 """Bench: the local server plus the installed Chrome, driven by Playwright.
 
 Chrome is the one already installed on the machine (``channel="chrome"``),
-started with a profile of its own from the cifarium cache. It starts without a
-window; if the job needs a graphics card and the windowless browser has no real
-adapter, it is restarted with a window (ARCHITECTURE.md, section 5).
+started with a profile of its own from the cifarium cache; the profile is
+emptied before and after every session. Chrome starts without a window; if the
+job needs a graphics card and the windowless browser has no real adapter, it
+is restarted with a window (ARCHITECTURE.md, section 5).
 
 Python and the page talk through ``window.cifariumBench`` (see web/bench/bench.js).
 """
@@ -11,6 +12,7 @@ Python and the page talk through ``window.cifariumBench`` (see web/bench/bench.j
 from __future__ import annotations
 
 import base64
+import shutil
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -135,6 +137,7 @@ def open_bench(
             yield Bench(server=server, context=context, headless=headless, device=device)
         finally:
             _close(context)
+            _wipe(profile)
 
 
 def start_chrome(
@@ -196,6 +199,11 @@ def open_tab(
 
 
 def _launch(playwright: Playwright, profile: Path, *, headless: bool) -> BrowserContext:
+    # Every session starts from an empty profile. The server gets a new port on
+    # each run, and browser storage is kept per address including the port, so
+    # the model and the executor cached by earlier runs (about 50 MB each time
+    # even for a small model) could never be reused and would pile up.
+    _wipe(profile)
     profile.mkdir(parents=True, exist_ok=True)
     try:
         return playwright.chromium.launch_persistent_context(
@@ -225,6 +233,11 @@ def _close(target: BrowserContext | Page) -> None:
         target.close()
     except PlaywrightError:
         pass  # already closed, or Chrome is gone
+
+
+def _wipe(profile: Path) -> None:
+    """Delete the bench's Chrome profile; files still held by Chrome are left for next time."""
+    shutil.rmtree(profile, ignore_errors=True)
 
 
 def _ignore(message: str) -> None:
