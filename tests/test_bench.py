@@ -1,10 +1,14 @@
-"""Bench logic that needs no browser: when Chrome gets a window."""
+"""Bench logic that needs no browser: when Chrome gets a window, decoding vectors."""
 
 from __future__ import annotations
 
+import base64
+
+import numpy as np
 import pytest
 
-from cifarium.bench import has_real_gpu, start_chrome
+from cifarium import vendor
+from cifarium.bench import decode_vectors, engine_urls, has_real_gpu, start_chrome
 
 INTEL = {"webgpu": {"vendor": "intel", "isFallbackAdapter": False}}
 SOFTWARE = {"webgpu": {"vendor": "google", "isFallbackAdapter": True}}
@@ -34,6 +38,23 @@ class FakeChrome:
 
     def probe(self, context: FakeContext) -> dict:
         return self.reports[context.headless]
+
+
+def test_vectors_are_decoded_as_little_endian_float32_rows():
+    rows = np.array([[0.5, -1.0, 2.0], [0.25, 0.0, 1e-3]], dtype="<f4")
+    result = {"count": 2, "dims": 3, "vectors": base64.b64encode(rows.tobytes()).decode("ascii")}
+
+    vectors = decode_vectors(result)
+
+    assert vectors.shape == (2, 3)
+    assert vectors.dtype == np.float32
+    assert np.array_equal(vectors, rows)
+
+
+def test_engine_urls_point_into_the_vendor_folder():
+    urls = engine_urls()
+    assert set(urls) == {"library", "wasmLoader", "wasmBinary"}
+    assert all(url.startswith(f"/vendor/{vendor.TRANSFORMERS_VERSION}/") for url in urls.values())
 
 
 @pytest.mark.parametrize(
