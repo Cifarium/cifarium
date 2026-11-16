@@ -57,15 +57,18 @@ jobs:
       - name: Find the cifarium cache folder
         id: cache-dir
         run: echo "path=$(python -c 'from cifarium import paths; print(paths.cache_dir())')" >> "$GITHUB_OUTPUT"
-      # Only the downloads: the engine and the model. The key changes when a pinned engine
-      # version or the model of the test changes, so a stale cache is never reused.
-      - name: Restore the engine and the model
+      # Only the downloads: the engine and the models. The key is made of the files that pin
+      # what gets downloaded: the engine versions (vendor.py), the model of the temporary smoke
+      # test (smoke.py, a missing file is skipped) and the catalog. A cache that is hit by its
+      # exact key is not saved again, so when the end-to-end test starts to download something
+      # these files do not name, add the file that names it here.
+      - name: Restore the engine and the models
         uses: actions/cache@v6
         with:
           path: |
             ${{ steps.cache-dir.outputs.path }}/vendor
             ${{ steps.cache-dir.outputs.path }}/models
-          key: e2e-${{ runner.os }}-${{ hashFiles('src/cifarium/vendor.py', 'src/cifarium/smoke.py') }}
+          key: e2e-${{ runner.os }}-${{ hashFiles('src/cifarium/vendor.py', 'src/cifarium/smoke.py', 'src/cifarium/catalog/**') }}
       # The runner has no graphics card and no screen. The test never asks for a card, so the
       # bench starts Chrome without a window and computes on the processor.
       - name: Run the end-to-end test
