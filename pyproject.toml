@@ -1,11 +1,15 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "cifarium"
 dynamic = ["version"]
 description = "Find the smallest model that handles your examples right in the browser."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Talgat" }]
 requires-python = ">=3.10"
 dependencies = [
     "playwright>=1.49",
@@ -16,6 +20,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+
+[project.urls]
+Repository = "https://github.com/Cifarium/cifarium"
+Issues = "https://github.com/Cifarium/cifarium/issues"
 
 [project.scripts]
 cifarium = "cifarium.cli:main"
