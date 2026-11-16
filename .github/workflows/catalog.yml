@@ -1,0 +1,41 @@
+name: catalog
+
+# Is the model catalog still true? Reads only the Hugging Face API, never writes anything:
+# no --write, no repository rights, no token. A red run means one of the entries needs a person:
+#   - the files of a model changed on the Hub (the line says which file),
+#   - the pinned version of a model is gone from the Hub (downloading it fails for everyone),
+#   - a license or base model on the Hub differs from the entry,
+#   - or the Hub could not be read (network, rate limit): run it again before looking further.
+# The line of every entry is in the log of the step.
+
+on:
+  schedule:
+    # Mondays, 05:17 UTC; an off-peak minute, since many schedules start on the hour.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+  # A change to the catalog or to the code that reads it is checked right away.
+  push:
+    paths:
+      - ".github/workflows/catalog.yml"
+      - "src/cifarium/catalog/**"
+      - "src/cifarium/catalog_update.py"
+      - "src/cifarium/hub.py"
+
+permissions:
+  contents: read
+
+jobs:
+  catalog-update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the package
+        run: python -m pip install -e .
+      - name: Compare the catalog with Hugging Face
+        run: cifarium catalog-update
