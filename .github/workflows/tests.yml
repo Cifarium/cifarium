@@ -1,11 +1,15 @@
 name: tests
 
 # Every push and pull request: the ordinary tests on the three systems at both ends of the
-# supported Python range, and one end-to-end run in Chrome on Linux.
+# supported Python range, and one end-to-end run in Chrome on Linux. The "-latest" labels move
+# to a newer system image from time to time (ubuntu-latest went to Ubuntu 26 in autumn 2026);
+# a run that turns red after such a move is a finding, not noise. The button runs the same
+# jobs without a commit, for example after the image got a new Chrome.
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
