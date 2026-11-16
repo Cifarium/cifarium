@@ -53,6 +53,10 @@ python -m pip install -e .
 cifarium init
 ```
 
+## For contributors
+
+`cifarium catalog-update` compares the model catalog with Hugging Face and shows what changed (it reads the API only; `--write` rewrites the pinned versions and file sizes); exit code 1 means the catalog is out of date.
+
 ## License
 
 Apache-2.0. Models keep their own licenses; by default cifarium only picks models whose license allows commercial use.

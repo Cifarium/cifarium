@@ -79,6 +79,27 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument(
         "--headed", action="store_true", help="open a Chrome window instead of running without one"
     )
+
+    # A service command for people who maintain the catalog. No `help=` on purpose: with it
+    # argparse lists the command in `cifarium --help`, and `help=SUPPRESS` prints "==SUPPRESS==".
+    update = commands.add_parser(
+        "catalog-update",
+        description=(
+            "Compare every model catalog entry with Hugging Face and show what changed: "
+            "version, file sizes, dtype, the license in the cards, closed access. Reads the "
+            "Hugging Face API only and downloads no model files. By default writes nothing. "
+            "Exit code 0 when the catalog is up to date, 1 when something differs or failed."
+        ),
+    )
+    update.add_argument(
+        "--write",
+        action="store_true",
+        help="rewrite revision, common_files and variants of the changed entries; "
+        "license, license_source, languages and recipes are never touched",
+    )
+    update.add_argument(
+        "--only", action="append", default=[], metavar="ID", help="check only this entry; may be repeated"
+    )
     return parser
 
 
@@ -92,5 +113,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         from . import smoke
 
         return smoke.run(headed=args.headed)
+    if args.command == "catalog-update":
+        from . import catalog_update
+
+        return catalog_update.run(write=args.write, only=args.only)
     parser.print_help()
     return 0

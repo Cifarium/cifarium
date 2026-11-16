@@ -38,6 +38,20 @@ def test_download_errors_name_the_file(tmp_path, monkeypatch):
         hub.download_files("org/model", "abc123", ["config.json"], tmp_path)
 
 
+class ConnectError(Exception):
+    """Stands for the HTTP client's error: not an OSError."""
+
+
+def test_a_download_error_that_is_not_an_oserror_is_a_hub_error_too(tmp_path, monkeypatch):
+    def offline(repo_id, filename, *, revision, local_dir):
+        raise ConnectError("name resolution failed")
+
+    monkeypatch.setattr(hub, "hf_hub_download", offline)
+
+    with pytest.raises(hub.HubError, match="config.json of org/model: name resolution failed$"):
+        hub.download_files("org/model", "abc123", ["config.json"], tmp_path)
+
+
 class FakeApi:
     def __init__(self, info=None, error=None):
         self.info, self.error, self.calls = info, error, []
@@ -85,10 +99,6 @@ def test_repo_info_without_card_and_with_a_gate():
     info = hub.repo_info("org/model", "b" * 40, api=FakeApi(fake_info(card_data=None, gated="manual")))
 
     assert (info.license, info.base_model, info.gated) == (None, None, True)
-
-
-class ConnectError(Exception):
-    """Stands for the HTTP client's error: not an OSError."""
 
 
 @pytest.mark.parametrize("error", [OSError("name resolution failed\ndetails"),
