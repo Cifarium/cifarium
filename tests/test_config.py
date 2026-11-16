@@ -123,6 +123,12 @@ def test_labels_are_a_list_or_names_with_descriptions(tmp_path, labels):
         (BASE + "limits:\n  max_size: 300", "limits.max_size: unknown key; did you mean max_size_mb?"),
         (BASE + "limits:\n  max_size_mb: -5", "limits.max_size_mb: must be a positive number of megabytes"),
         (BASE + "limits:\n  max_latency_ms: fast", "limits.max_latency_ms: must be a positive number"),
+        (BASE + "limits:\n  max_size_mb: .nan", "limits.max_size_mb: must be a positive number of megabytes; got nan"),
+        (BASE + "limits:\n  max_latency_ms: .inf", "limits.max_latency_ms: must be a positive number of milliseconds; got inf"),
+        (BASE + "pass_rate: .nan", "pass_rate: must be a number between 0 and 1, like 0.85; got nan"),
+        (BASE + "output: .", "holds task.yaml itself; name a separate folder, like `output: ./cifarium-out`"),
+        (BASE + "output: ..", "holds task.yaml itself"),
+        (BASE + "labels: [Bug, bug]", 'labels, item 2: label "bug" differs from "Bug" only in letter case'),
         (BASE + "limits:\n  min_tokens_per_sec: 10", "limits.min_tokens_per_sec: used only by task summarize"),
         (BASE + "similarity: 0.8", "similarity: used only by task summarize; this file has task classify"),
         (BASE + "documents: ./docs.jsonl", "documents: used only by task search"),
@@ -144,6 +150,19 @@ def test_each_problem_names_the_key_and_what_is_wrong(tmp_path, text, expected):
     found = problems_of(tmp_path, text)
 
     assert any(expected in problem for problem in found), found
+
+
+@pytest.mark.parametrize("task", ["search", "summarize"])
+def test_a_task_not_supported_yet_shows_only_that(tmp_path, task):
+    found = problems_of(tmp_path, f"task: {task}\nexamples: ./examples.jsonl\nlabels: [a, b]\n")
+
+    assert found == [f"task: {task} is not supported yet; this version supports only classify"]
+
+
+def test_label_names_are_kept_in_one_unicode_form(tmp_path):
+    cfg = config.load(write(tmp_path, BASE + "labels: ['й', bug]\n"))
+
+    assert cfg.labels[0].name == "й"
 
 
 def test_all_problems_are_reported_at_once(tmp_path):

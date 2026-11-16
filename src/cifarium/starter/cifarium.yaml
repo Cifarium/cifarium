@@ -6,7 +6,7 @@
 task: classify
 
 # Your examples, one JSON object per line: {"input": "...", "expected": "label"}.
-# 10 to 20 examples are enough, with at least one for every label.
+# 10 to 20 examples are enough, with at least two for every label.
 examples: ./examples.jsonl
 
 # The labels, each with an optional short description.
@@ -25,7 +25,7 @@ limits:
   # Longest time for one answer, in milliseconds. No limit by default.
   # max_latency_ms: 200
 
-# Which models to try: commercial (the licence allows commercial use) or any.
+# Which models to try: commercial (the license allows commercial use) or any.
 license: commercial
 
 # Where the site loads the model from: bundle (the build folder) or hub (Hugging Face).

@@ -8,13 +8,18 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
+from .config import DEFAULT_FILE
+from .examples import DEFAULT_FILE as EXAMPLES_FILE
 
 STARTER_DIR = Path(__file__).resolve().parent / "starter"
-STARTER_FILES = ("task.yaml", "examples.jsonl")
+STARTER_FILES = (DEFAULT_FILE, EXAMPLES_FILE)
 
 
 def run_init(folder: Path) -> int:
-    """Write the starter settings and examples into ``folder``. Never overwrites."""
+    """Write the starter settings and examples into ``folder``. Never overwrites.
+
+    Either both files are written or none: a file written before a failure is removed.
+    """
     existing = [name for name in STARTER_FILES if (folder / name).exists()]
     if existing:
         print(
@@ -23,16 +28,25 @@ def run_init(folder: Path) -> int:
             file=sys.stderr,
         )
         return 1
+    written: list[Path] = []
     for name in STARTER_FILES:
+        target = folder / name
         try:
-            with open(folder / name, "xb") as file:  # "x" fails instead of overwriting
+            with open(target, "xb") as file:  # "x" fails instead of overwriting
+                written.append(target)
                 file.write((STARTER_DIR / name).read_bytes())
-        except FileExistsError:
-            print(f"Stopped: {name} appeared in {folder} while writing.", file=sys.stderr)
+        except OSError as err:
+            for path in written:
+                path.unlink(missing_ok=True)
+            if isinstance(err, FileExistsError):
+                reason = f"{name} appeared while writing"
+            else:
+                reason = f"cannot write {name}: {err.strerror or err}"
+            print(f"Nothing written to {folder}: {reason}.", file=sys.stderr)
             return 1
     print(f"Wrote {' and '.join(STARTER_FILES)} to {folder}")
-    print("Next: put your own examples into examples.jsonl, one per line,")
-    print("and list your labels in task.yaml.")
+    print(f"Next: put your own examples into {EXAMPLES_FILE}, one per line,")
+    print(f"at least two for every label, and list your labels in {DEFAULT_FILE}.")
     return 0
 
 
@@ -46,10 +60,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser(
         "init",
-        help="write a starter task.yaml and examples.jsonl into the current folder",
+        help=f"write a starter {DEFAULT_FILE} and {EXAMPLES_FILE} into the current folder",
         description=(
-            "Write a starter task.yaml and examples.jsonl for a classification task into "
-            "the current folder. Writes nothing if either file is already there."
+            f"Write a starter {DEFAULT_FILE} and {EXAMPLES_FILE} for a classification task "
+            "into the current folder. Writes nothing if either file is already there."
         ),
     )
 

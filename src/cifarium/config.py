@@ -1,4 +1,4 @@
-"""Reading and checking the settings file, ``task.yaml`` by default.
+"""Reading and checking the settings file, ``cifarium.yaml`` by default.
 
 Paths inside the file are relative to the file itself, not to the current folder.
 Every problem found is collected, so one run shows all of them at once.
@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import difflib
 import json
+import math
 import os
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-DEFAULT_FILE = "task.yaml"
+DEFAULT_FILE = "cifarium.yaml"
 
 TASKS = ("classify", "search", "summarize")
 SUPPORTED_TASKS = ("classify",)
@@ -54,7 +56,7 @@ MAX_SHOWN_PROBLEMS = 20
 
 
 class TaskFileError(Exception):
-    """A file written by the user cannot be used. ``problems`` lists every issue found."""
+    """A settings, examples or catalog file cannot be used. ``problems`` lists every issue."""
 
     def __init__(self, path: Path, problems: list[str]) -> None:
         self.path = Path(path)
@@ -91,6 +93,12 @@ def read_text(path: Path, error: type[TaskFileError]) -> str:
     except UnicodeDecodeError as err:
         line = data[: err.start].count(b"\n") + 1
         raise error(path, [f"line {line}: not UTF-8 text; save the file as UTF-8"]) from None
+
+
+def label_text(name: str) -> str:
+    """One spelling for a label: trimmed and in Unicode NFC, so that "й" typed as one
+    character and as two compares equal."""
+    return unicodedata.normalize("NFC", name.strip())
 
 
 def describe(value: Any) -> str:
@@ -175,20 +183,24 @@ def _construct_mapping(loader: _Loader, node: yaml.MappingNode) -> dict:
 _Loader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
 
 
-def load(path: str | os.PathLike[str] = DEFAULT_FILE) -> Config:
-    """Read and check the settings file. Raises :class:`ConfigError`."""
-    path = Path(path)
-    text = read_text(path, ConfigError)
+def read_yaml(path: Path, error: type[TaskFileError]) -> Any:
+    """Read a UTF-8 YAML file safely; a key written twice is an error."""
+    text = read_text(path, error)
     try:
-        data = yaml.load(text, Loader=_Loader)  # noqa: S506 - _Loader is a SafeLoader
+        return yaml.load(text, Loader=_Loader)  # noqa: S506 - _Loader is a SafeLoader
     except yaml.MarkedYAMLError as err:
         mark = err.problem_mark or err.context_mark
         where = f"line {mark.line + 1}, column {mark.column + 1}: " if mark else ""
         problem = err.problem or err.context or "unreadable"
-        raise ConfigError(path, [f"{where}not valid YAML: {problem}"]) from None
+        raise error(path, [f"{where}not valid YAML: {problem}"]) from None
     except yaml.YAMLError as err:
-        raise ConfigError(path, [f"not valid YAML: {err}"]) from None
-    return parse(data, path)
+        raise error(path, [f"not valid YAML: {err}"]) from None
+
+
+def load(path: str | os.PathLike[str] = DEFAULT_FILE) -> Config:
+    """Read and check the settings file. Raises :class:`ConfigError`."""
+    path = Path(path)
+    return parse(read_yaml(path, ConfigError), path)
 
 
 def parse(data: Any, path: Path) -> Config:
@@ -277,8 +289,8 @@ class _Checker:
         elif value in SUPPORTED_TASKS:
             return value
         elif value in TASKS:
+            # Returning None skips the keys of that task, so only this message shows.
             self.add("task", f"{value} is not supported yet; this version supports only classify")
-            return value
         else:
             hint = did_you_mean(value, TASKS) or f"; the tasks are {choices}"
             self.add("task", f"unknown task {describe(value)}{hint}")
@@ -307,6 +319,11 @@ class _Checker:
             return None
         if not must_exist and resolved.is_file():
             self.add(key, f"{resolved} is a file; name a folder")
+            return None
+        if not must_exist and self.base.is_relative_to(resolved):
+            # The build would land among the project's own files.
+            self.add(key, f"{resolved} holds {self.path.name} itself; name a separate folder, "
+                     f"like `{key}: {DEFAULT_OUTPUT}`")
             return None
         return resolved
 
@@ -360,7 +377,8 @@ class _Checker:
             number = value.get(key)
             if number is None:
                 continue
-            if isinstance(number, bool) or not isinstance(number, (int, float)) or number <= 0:
+            if (isinstance(number, bool) or not isinstance(number, (int, float))
+                    or not math.isfinite(number) or number <= 0):
                 self.add(full, f"must be a positive number of {units[key]}; got {describe(number)}")
             else:
                 numbers[key] = float(number)
@@ -389,7 +407,7 @@ class _Checker:
             return None
 
         labels: list[Label] = []
-        names: set[str] = set()
+        names: dict[str, str] = {}  # casefolded name -> name as written
         for where, name, description in pairs:
             if not isinstance(name, str):
                 if isinstance(name, (bool, int, float)):
@@ -398,17 +416,22 @@ class _Checker:
                 else:
                     self.add(where, f"label name must be text; got {describe(name)}")
                 continue
-            name = name.strip()
+            name = label_text(name)
             if not name:
                 self.add(where, "label name is empty")
                 continue
-            if name in names:
+            twin = names.get(name.casefold())
+            if twin == name:
                 self.add(where, f"label {describe(name)} is listed twice")
+                continue
+            if twin is not None:
+                self.add(where, f"label {describe(name)} differs from {describe(twin)} only in "
+                         "letter case; keep one spelling")
                 continue
             if description is not None and not isinstance(description, str):
                 self.add(where, f"description must be text; got {describe(description)}")
                 continue
-            names.add(name)
+            names[name.casefold()] = name
             labels.append(Label(name, (description or "").strip() or None))
         if len(pairs) < 2:
             self.add("labels", "classification needs at least two labels")

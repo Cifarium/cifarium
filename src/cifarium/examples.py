@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import Config, Label, TaskFileError, describe, did_you_mean, read_text
+from .config import Config, Label, TaskFileError, describe, did_you_mean, label_text, read_text
+
+# Each example is scored on label centres computed without it, so a label with a
+# single example has no centre left and that example always fails.
+MIN_EXAMPLES_PER_LABEL = 2
 
 DEFAULT_FILE = "examples.jsonl"
 
@@ -54,8 +59,8 @@ def read(
 ) -> Examples:
     """Read and check classification examples. Raises :class:`ExamplesError`.
 
-    With ``labels`` every ``expected`` must be one of them and every label needs an
-    example. Without, the labels are taken from the examples.
+    With ``labels`` every ``expected`` must be one of them. Without, the labels are
+    taken from the examples. Either way every label needs at least two examples.
     """
     path = Path(path)
     text = read_text(path, ExamplesError)
@@ -90,7 +95,7 @@ def read(
                             "keep one of them")
             continue
         first_line[key] = number
-        items.append(Example(number, text_in, expected.strip()))
+        items.append(Example(number, text_in, label_text(expected)))
 
     if not items and not problems:
         problems.append(f"no examples; write one per line: {_SHAPE}")
@@ -125,23 +130,42 @@ def _check_labels(
     settings_name: str,
     problems: list[str],
 ) -> tuple[Label, ...]:
+    counts = Counter(example.expected for example in items)
+    first = {}
+    for example in items:
+        first.setdefault(example.expected, example.line)
+
     if labels is None:
-        names = list(dict.fromkeys(example.expected for example in items))
+        names = list(counts)  # Counter keeps the order of first appearance
         if len(names) < 2:
             problems.append(f"every example has the label {describe(names[0])}; "
                             "classification needs at least two labels")
-        return tuple(Label(name) for name in names)
+        seen: dict[str, str] = {}
+        for name in names:
+            twin = seen.setdefault(name.casefold(), name)
+            if twin != name:
+                problems.append(f"line {first[name]}: label {describe(name)} differs from "
+                                f"{describe(twin)} (line {first[twin]}) only in letter case; "
+                                "keep one spelling")
+        final = tuple(Label(name) for name in names)
+    else:
+        names = [label.name for label in labels]
+        for example in items:
+            if example.expected not in names:
+                problems.append(f"line {example.line}: label {describe(example.expected)} is not "
+                                f"listed under labels in {settings_name}"
+                                f"{did_you_mean(example.expected, names)}")
+        for name in names:
+            if name not in counts:
+                problems.append(f"label {describe(name)} from {settings_name} has no examples; "
+                                f"add at least {MIN_EXAMPLES_PER_LABEL}, or remove the label")
+        final = labels
 
-    names = [label.name for label in labels]
-    used: set[str] = set()
-    for example in items:
-        if example.expected in names:
-            used.add(example.expected)
-        else:
-            problems.append(f"line {example.line}: label {describe(example.expected)} is not listed "
-                            f"under labels in {settings_name}{did_you_mean(example.expected, names)}")
-    for name in names:
-        if name not in used:
-            problems.append(f"label {describe(name)} from {settings_name} has no examples; "
-                            "add at least one, or remove the label")
-    return labels
+    known = [label.name for label in final]
+    for label in final:
+        if counts[label.name] == 1:
+            others = [name for name in known if name != label.name]
+            problems.append(f"line {first[label.name]}: label {describe(label.name)} has only one "
+                            f"example; every label needs at least {MIN_EXAMPLES_PER_LABEL}"
+                            f"{did_you_mean(label.name, others)}")
+    return final
