@@ -87,8 +87,12 @@ def test_repo_info_without_card_and_with_a_gate():
     assert (info.license, info.base_model, info.gated) == (None, None, True)
 
 
-def test_repo_info_errors_name_the_repository():
-    api = FakeApi(error=OSError("name resolution failed\ndetails"))
+class ConnectError(Exception):
+    """Stands for the HTTP client's error: not an OSError."""
 
+
+@pytest.mark.parametrize("error", [OSError("name resolution failed\ndetails"),
+                                   ConnectError("name resolution failed")])
+def test_repo_info_errors_name_the_repository(error):
     with pytest.raises(hub.HubError, match="Could not read org/model on Hugging Face: name resolution failed$"):
-        hub.repo_info("org/model", api=api)
+        hub.repo_info("org/model", api=FakeApi(error=error))

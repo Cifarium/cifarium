@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download
-from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
+from huggingface_hub.errors import EntryNotFoundError
 
 from . import paths
 
@@ -38,7 +38,9 @@ def repo_info(repo_id: str, revision: str | None = None, api: HfApi | None = Non
     api = api or HfApi()
     try:
         info = api.model_info(repo_id, revision=revision, files_metadata=True)
-    except (OSError, HfHubHTTPError) as error:
+    # Without the network huggingface_hub 2.4 raises the HTTP client's own ConnectError,
+    # which is neither OSError nor HfHubHTTPError; only this one call is guarded.
+    except Exception as error:  # noqa: BLE001
         lines = str(error).strip().splitlines()
         reason = lines[0] if lines else type(error).__name__
         raise HubError(f"Could not read {repo_id} on Hugging Face: {reason}") from error
