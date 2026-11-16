@@ -1,0 +1,15 @@
+{"input": "I was charged twice for my subscription this month.", "expected": "billing"}
+{"input": "The app crashes every time I open the settings page.", "expected": "bug"}
+{"input": "I forgot my password and the reset email never arrives.", "expected": "account"}
+{"input": "How do I get a refund for the order I cancelled?", "expected": "billing"}
+{"input": "The export button does nothing when I click it.", "expected": "bug"}
+{"input": "How can I change the email address on my account?", "expected": "account"}
+{"input": "Can you send me an invoice with my company details?", "expected": "billing"}
+{"input": "Images on the product page stopped loading yesterday.", "expected": "bug"}
+{"input": "I want to delete my account and all my data.", "expected": "account"}
+{"input": "My card was declined, but the money left my bank account.", "expected": "billing"}
+{"input": "I get error 500 when I try to save a draft.", "expected": "bug"}
+{"input": "How do I turn on two-factor authentication?", "expected": "account"}
+{"input": "Why did the price of my plan go up?", "expected": "billing"}
+{"input": "Search shows every result twice.", "expected": "bug"}
+{"input": "Can I add a second person to my account?", "expected": "account"}

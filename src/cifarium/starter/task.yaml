@@ -1,0 +1,35 @@
+# cifarium settings. Paths are relative to this file.
+# Only task and examples are required; the other values below are the defaults.
+
+# What the model does. This version supports classify:
+# it puts a short text under one of your labels.
+task: classify
+
+# Your examples, one JSON object per line: {"input": "...", "expected": "label"}.
+# 10 to 20 examples are enough, with at least one for every label.
+examples: ./examples.jsonl
+
+# The labels, each with an optional short description.
+# Delete this block to take the labels from the examples.
+labels:
+  billing: payments, invoices and refunds
+  bug: something is broken or does not work
+  account: signing in, passwords and profile settings
+
+# Share of the examples the model must get right.
+pass_rate: 0.85
+
+limits:
+  # Most a visitor downloads on the first visit, engine included, in megabytes.
+  max_size_mb: 300
+  # Longest time for one answer, in milliseconds. No limit by default.
+  # max_latency_ms: 200
+
+# Which models to try: commercial (the licence allows commercial use) or any.
+license: commercial
+
+# Where the site loads the model from: bundle (the build folder) or hub (Hugging Face).
+host: bundle
+
+# Build folder for your site.
+output: ./cifarium-out
