@@ -1,0 +1,19 @@
+id: nli-deberta-v3-xsmall
+repo: Xenova/nli-deberta-v3-xsmall
+revision: 2a4f614a701367a02d51389039afc998faeda637
+license: apache-2.0
+license_source: cross-encoder/nli-deberta-v3-xsmall
+languages: [en]
+common_files:
+  config.json: 1038
+  tokenizer.json: 8656551
+  tokenizer_config.json: 384
+variants:
+  cpu:
+    device: wasm
+    dtype: q8
+    files:
+      onnx/model_quantized.onnx: 87246587
+recipes:
+  - task: classify
+    kind: zero-shot

@@ -1,0 +1,22 @@
+id: embeddinggemma-300m
+repo: onnx-community/embeddinggemma-300m-ONNX
+revision: 5090578d9565bb06545b4552f76e6bc2c93e4a66
+license: gemma
+license_source: google/embeddinggemma-300m
+languages: [multi]
+common_files:
+  config.json: 1765
+  tokenizer.json: 20323312
+  tokenizer_config.json: 1156830
+variants:
+  cpu:
+    device: wasm
+    dtype: q4
+    files:
+      onnx/model_q4.onnx: 519322
+      onnx/model_q4.onnx_data: 196725760
+recipes:
+  - task: classify
+    kind: embed-centroid
+    pooling: none
+    prefix: "task: classification | query: "

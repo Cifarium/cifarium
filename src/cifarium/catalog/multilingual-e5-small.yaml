@@ -1,0 +1,21 @@
+id: multilingual-e5-small
+repo: Xenova/multilingual-e5-small
+revision: 761b726dd34fb83930e26aab4e9ac3899aa1fa78
+license: mit
+license_source: intfloat/multilingual-e5-small
+languages: [multi]
+common_files:
+  config.json: 658
+  tokenizer.json: 17082730
+  tokenizer_config.json: 443
+variants:
+  cpu:
+    device: wasm
+    dtype: q8
+    files:
+      onnx/model_quantized.onnx: 118308185
+recipes:
+  - task: classify
+    kind: embed-centroid
+    pooling: mean
+    prefix: "query: "

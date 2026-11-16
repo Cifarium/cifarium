@@ -1,0 +1,19 @@
+id: mdeberta-v3-base-xnli
+repo: Xenova/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7
+revision: 0864ced79bf1ef851bfaf9dd9de0aa54d735d9d0
+license: mit
+license_source: MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7
+languages: [multi]
+common_files:
+  config.json: 1061
+  tokenizer.json: 16316151
+  tokenizer_config.json: 492
+variants:
+  cpu:
+    device: wasm
+    dtype: q8
+    files:
+      onnx/model_quantized.onnx: 338679132
+recipes:
+  - task: classify
+    kind: zero-shot

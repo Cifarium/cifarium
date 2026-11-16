@@ -1,0 +1,21 @@
+id: all-minilm-l6-v2
+repo: Xenova/all-MiniLM-L6-v2
+revision: 751bff37182d3f1213fa05d7196b954e230abad9
+license: apache-2.0
+license_source: sentence-transformers/all-MiniLM-L6-v2
+languages: [en]
+common_files:
+  config.json: 650
+  tokenizer.json: 711661
+  tokenizer_config.json: 366
+variants:
+  cpu:
+    device: wasm
+    dtype: q8
+    files:
+      onnx/model_quantized.onnx: 22972370
+recipes:
+  - task: classify
+    kind: embed-centroid
+    pooling: mean
+    prefix: ""

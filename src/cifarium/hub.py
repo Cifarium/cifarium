@@ -3,16 +3,60 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
-from huggingface_hub import hf_hub_download
-from huggingface_hub.errors import EntryNotFoundError
+from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
 
 from . import paths
 
 
 class HubError(RuntimeError):
-    """Model files could not be downloaded."""
+    """Model files or facts about them could not be fetched."""
+
+
+@dataclass(frozen=True)
+class RepoInfo:
+    """What Hugging Face says about one model repository at one revision."""
+
+    repo: str
+    revision: str
+    """Full commit hash, 40 characters."""
+    files: dict[str, int]
+    """Path inside the repository -> size in bytes."""
+    license: str | None
+    """License from the model card metadata, if the card names one."""
+    base_model: str | None
+    """Source repository named in the card, for copies such as ONNX conversions."""
+    gated: bool
+    """Whether downloading needs a signed-in account that accepted the terms."""
+
+
+def repo_info(repo_id: str, revision: str | None = None, api: HfApi | None = None) -> RepoInfo:
+    """Commit hash, file sizes, card license and gating of one model, without downloading."""
+    api = api or HfApi()
+    try:
+        info = api.model_info(repo_id, revision=revision, files_metadata=True)
+    except (OSError, HfHubHTTPError) as error:
+        lines = str(error).strip().splitlines()
+        reason = lines[0] if lines else type(error).__name__
+        raise HubError(f"Could not read {repo_id} on Hugging Face: {reason}") from error
+
+    def first(value: object) -> str | None:
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else None
+        return value if isinstance(value, str) and value else None
+
+    card = info.card_data
+    return RepoInfo(
+        repo=repo_id,
+        revision=info.sha,
+        files={item.rfilename: item.size for item in info.siblings or () if item.size is not None},
+        license=first(getattr(card, "license", None)),
+        base_model=first(getattr(card, "base_model", None)),
+        gated=bool(info.gated),
+    )
 
 
 def model_dir(repo_id: str, cache: Path | None = None) -> Path:

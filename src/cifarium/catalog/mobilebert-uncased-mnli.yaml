@@ -1,0 +1,19 @@
+id: mobilebert-uncased-mnli
+repo: Xenova/mobilebert-uncased-mnli
+revision: 8b0ea66ab7b190bba77418ba03b67d69cfc9a1ee
+license: unknown
+license_source: typeform/mobilebert-uncased-mnli
+languages: [en]
+common_files:
+  config.json: 1092
+  tokenizer.json: 711396
+  tokenizer_config.json: 400
+variants:
+  cpu:
+    device: wasm
+    dtype: q8
+    files:
+      onnx/model_quantized.onnx: 26967165
+recipes:
+  - task: classify
+    kind: zero-shot

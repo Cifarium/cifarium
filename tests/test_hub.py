@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from cifarium import hub
@@ -34,3 +36,59 @@ def test_download_errors_name_the_file(tmp_path, monkeypatch):
 
     with pytest.raises(hub.HubError, match="config.json of org/model: network is unreachable$"):
         hub.download_files("org/model", "abc123", ["config.json"], tmp_path)
+
+
+class FakeApi:
+    def __init__(self, info=None, error=None):
+        self.info, self.error, self.calls = info, error, []
+
+    def model_info(self, repo_id, *, revision=None, files_metadata=False):
+        self.calls.append((repo_id, revision, files_metadata))
+        if self.error:
+            raise self.error
+        return self.info
+
+
+def fake_info(**changes):
+    sha = "a" * 40
+    fields = dict(
+        sha=sha,
+        siblings=[
+            SimpleNamespace(rfilename="config.json", size=650),
+            SimpleNamespace(rfilename="onnx/model_quantized.onnx", size=23_026_053),
+            SimpleNamespace(rfilename="README.md", size=None),
+        ],
+        card_data=SimpleNamespace(license="apache-2.0", base_model=["org/source"]),
+        gated=False,
+    )
+    fields.update(changes)
+    return SimpleNamespace(**fields)
+
+
+def test_repo_info_reads_hash_sizes_license_and_gating():
+    api = FakeApi(fake_info())
+
+    info = hub.repo_info("Xenova/model", api=api)
+
+    assert api.calls == [("Xenova/model", None, True)]
+    assert info == hub.RepoInfo(
+        repo="Xenova/model",
+        revision="a" * 40,
+        files={"config.json": 650, "onnx/model_quantized.onnx": 23_026_053},
+        license="apache-2.0",
+        base_model="org/source",
+        gated=False,
+    )
+
+
+def test_repo_info_without_card_and_with_a_gate():
+    info = hub.repo_info("org/model", "b" * 40, api=FakeApi(fake_info(card_data=None, gated="manual")))
+
+    assert (info.license, info.base_model, info.gated) == (None, None, True)
+
+
+def test_repo_info_errors_name_the_repository():
+    api = FakeApi(error=OSError("name resolution failed\ndetails"))
+
+    with pytest.raises(hub.HubError, match="Could not read org/model on Hugging Face: name resolution failed$"):
+        hub.repo_info("org/model", api=api)

@@ -1,0 +1,21 @@
+id: paraphrase-multilingual-minilm-l12-v2
+repo: Xenova/paraphrase-multilingual-MiniLM-L12-v2
+revision: 2c4055b12046f11709e9df2c122e59ffbdc2f900
+license: apache-2.0
+license_source: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+languages: [multi]
+common_files:
+  config.json: 673
+  tokenizer.json: 17082913
+  tokenizer_config.json: 496
+variants:
+  cpu:
+    device: wasm
+    dtype: q8
+    files:
+      onnx/model_quantized.onnx: 118308126
+recipes:
+  - task: classify
+    kind: embed-centroid
+    pooling: mean
+    prefix: ""
