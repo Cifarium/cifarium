@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.errors import RevisionNotFoundError
 
 from . import paths
 
 
 class HubError(RuntimeError):
     """Model files or facts about them could not be fetched."""
+
+
+class RevisionNotFound(HubError):
+    """The repository exists, but Hugging Face knows no such revision (any more)."""
 
 
 @dataclass(frozen=True)
@@ -30,13 +35,23 @@ class RepoInfo:
     """Source repository named in the card, for copies such as ONNX conversions."""
     gated: bool
     """Whether downloading needs a signed-in account that accepted the terms."""
+    blobs: dict[str, str] = field(default_factory=dict)
+    """Path -> ``blob_id`` (git object id) of the file. For files kept in Git LFS the object is
+    the pointer, which holds the SHA-256 of the content, so a changed file has a new id. A file
+    the Hub gave no id for is absent."""
 
 
 def repo_info(repo_id: str, revision: str | None = None, api: HfApi | None = None) -> RepoInfo:
-    """Commit hash, file sizes, card license and gating of one model, without downloading."""
+    """Commit hash, file sizes, card license and gating of one model, without downloading.
+
+    Raises :class:`RevisionNotFound` when ``revision`` is given and the Hub does not have it,
+    and :class:`HubError` for every other failure.
+    """
     api = api or HfApi()
     try:
         info = api.model_info(repo_id, revision=revision, files_metadata=True)
+    except RevisionNotFoundError as error:
+        raise RevisionNotFound(f"{repo_id} has no revision {revision} on Hugging Face") from error
     # Without the network huggingface_hub 2.4 raises the HTTP client's own ConnectError,
     # which is neither OSError nor HfHubHTTPError; only this one call is guarded.
     except Exception as error:  # noqa: BLE001
@@ -57,6 +72,8 @@ def repo_info(repo_id: str, revision: str | None = None, api: HfApi | None = Non
         license=first(getattr(card, "license", None)),
         base_model=first(getattr(card, "base_model", None)),
         gated=bool(info.gated),
+        blobs={item.rfilename: item.blob_id for item in info.siblings or ()
+               if item.size is not None and item.blob_id},
     )
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from huggingface_hub.errors import RevisionNotFoundError
 
 from cifarium import hub
 
@@ -68,9 +69,10 @@ def fake_info(**changes):
     fields = dict(
         sha=sha,
         siblings=[
-            SimpleNamespace(rfilename="config.json", size=650),
-            SimpleNamespace(rfilename="onnx/model_quantized.onnx", size=23_026_053),
-            SimpleNamespace(rfilename="README.md", size=None),
+            SimpleNamespace(rfilename="config.json", size=650, blob_id="c" * 40),
+            SimpleNamespace(rfilename="onnx/model_quantized.onnx", size=23_026_053, blob_id="d" * 40),
+            SimpleNamespace(rfilename="tokenizer.json", size=700, blob_id=None),
+            SimpleNamespace(rfilename="README.md", size=None, blob_id="e" * 40),
         ],
         card_data=SimpleNamespace(license="apache-2.0", base_model=["org/source"]),
         gated=False,
@@ -79,7 +81,7 @@ def fake_info(**changes):
     return SimpleNamespace(**fields)
 
 
-def test_repo_info_reads_hash_sizes_license_and_gating():
+def test_repo_info_reads_hash_sizes_blob_ids_license_and_gating():
     api = FakeApi(fake_info())
 
     info = hub.repo_info("Xenova/model", api=api)
@@ -88,11 +90,22 @@ def test_repo_info_reads_hash_sizes_license_and_gating():
     assert info == hub.RepoInfo(
         repo="Xenova/model",
         revision="a" * 40,
-        files={"config.json": 650, "onnx/model_quantized.onnx": 23_026_053},
+        files={"config.json": 650, "onnx/model_quantized.onnx": 23_026_053, "tokenizer.json": 700},
         license="apache-2.0",
         base_model="org/source",
         gated=False,
+        # tokenizer.json has no id and README.md no size: neither is listed where it is missing.
+        blobs={"config.json": "c" * 40, "onnx/model_quantized.onnx": "d" * 40},
     )
+
+
+def test_a_revision_the_hub_does_not_have_is_told_apart_from_other_errors():
+    # Built without the constructor: its arguments differ between huggingface_hub versions.
+    gone = RevisionNotFoundError.__new__(RevisionNotFoundError)
+
+    with pytest.raises(hub.RevisionNotFound, match="org/model has no revision " + "b" * 40):
+        hub.repo_info("org/model", "b" * 40, api=FakeApi(error=gone))
+    assert issubclass(hub.RevisionNotFound, hub.HubError)
 
 
 def test_repo_info_without_card_and_with_a_gate():

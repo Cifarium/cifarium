@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from huggingface_hub.errors import RevisionNotFoundError
 
 from cifarium import catalog, catalog_update, cli, hub
 from cifarium.catalog_update import Problem, pick
@@ -46,12 +47,21 @@ SHARED = {
 }
 
 
+BLOBS = {name: f"blob-{name}" for name in SHARED}
+"""The id every file has in every revision, until a test changes one."""
+RETOUCHED = {**BLOBS, "onnx/model_quantized.onnx": "blob-retouched"}
+"""Same files and sizes, but the weights are not the same bytes."""
+
+
 def card(files: dict[str, int] | None = None, *, sha: str = OLD_HASH, license: str | None = None,
-         base_model: str | None = None, gated: bool = False) -> SimpleNamespace:
+         base_model: str | None = None, gated: bool = False,
+         blobs: dict[str, str] | None = None) -> SimpleNamespace:
     """What `HfApi.model_info` returns for one repository."""
+    blobs = BLOBS if blobs is None else blobs
     return SimpleNamespace(
         sha=sha,
-        siblings=[SimpleNamespace(rfilename=name, size=size) for name, size in (files or SHARED).items()],
+        siblings=[SimpleNamespace(rfilename=name, size=size, blob_id=blobs.get(name))
+                  for name, size in (files or SHARED).items()],
         card_data=SimpleNamespace(license=license, base_model=base_model),
         gated=gated,
     )
@@ -68,12 +78,19 @@ def tiny_repos(**changes: object) -> dict[str, object]:
 
 
 class FakeApi:
-    def __init__(self, repos: dict[str, object]) -> None:
-        self.repos, self.calls = repos, []
+    """The newest revision comes from ``repos``. A call with a ``revision`` comes from ``pinned``;
+    a repository missing there still has its pinned revision, holding the files the entry lists."""
+
+    def __init__(self, repos: dict[str, object], pinned: dict[str, object] | None = None) -> None:
+        self.repos, self.pinned, self.calls = repos, pinned or {}, []
 
     def model_info(self, repo_id, *, revision=None, files_metadata=False):
-        self.calls.append(repo_id)
-        value = self.repos[repo_id]
+        if revision is None:
+            self.calls.append(repo_id)
+            value = self.repos[repo_id]
+        else:
+            self.calls.append(f"{repo_id}@{revision[:7]}")
+            value = self.pinned.get(repo_id, card(sha=revision))
         if isinstance(value, Exception):
             raise value
         return value
@@ -81,6 +98,12 @@ class FakeApi:
 
 class ConnectError(Exception):
     """Stands for the HTTP client's error: not an OSError."""
+
+
+def revision_gone() -> Exception:
+    """The Hub client's error for a revision the Hub does not have. Built without the
+    constructor, whose arguments differ between huggingface_hub versions."""
+    return RevisionNotFoundError.__new__(RevisionNotFoundError)
 
 
 def folder_with(tmp_path: Path, **entries: str) -> Path:
@@ -91,9 +114,10 @@ def folder_with(tmp_path: Path, **entries: str) -> Path:
     return folder
 
 
-def go(folder: Path, repos: dict[str, object], **options) -> tuple[int, list[str], FakeApi]:
+def go(folder: Path, repos: dict[str, object], pinned: dict[str, object] | None = None,
+       **options) -> tuple[int, list[str], FakeApi]:
     lines: list[str] = []
-    api = FakeApi(repos)
+    api = FakeApi(repos, pinned)
     code = catalog_update.run(folder=folder, api=api, out=lines.append, **options)
     return code, lines, api
 
@@ -117,27 +141,117 @@ def test_nothing_changed_reports_so_writes_nothing_and_exits_zero(tmp_path):
     assert api.calls == ["Org/tiny-model", "org/tiny-source"]
 
 
-def test_a_new_hash_is_shown_and_without_the_write_flag_nothing_changes(tmp_path):
+def test_a_new_hash_over_the_same_files_is_not_a_change_and_write_leaves_the_file_alone(tmp_path):
     folder = folder_with(tmp_path, **{"tiny-model": ENTRY})
+    repos = tiny_repos(**{"Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source")})
 
-    code, lines, _ = go(folder, tiny_repos(**{"Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source")}))
+    code, lines, api = go(folder, repos, write=True)
+
+    assert code == 0
+    assert lines[0] == "tiny-model  unchanged (newer revision bbbbbbb has the same files)"
+    assert lines[1] == "1 entries: 1 unchanged, 0 changed, 0 to check by hand, 0 with errors; 0 files rewritten"
+    assert text_of(folder) == ENTRY
+    assert api.calls == ["Org/tiny-model", "Org/tiny-model@0123456", "org/tiny-source"]
+
+
+def test_a_new_hash_with_a_file_of_the_same_size_but_another_blob_id_is_a_change(tmp_path):
+    folder = folder_with(tmp_path, **{"tiny-model": ENTRY})
+    repos = tiny_repos(**{"Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source", blobs=RETOUCHED)})
+
+    code, lines, _ = go(folder, repos)
 
     assert code == 1
-    assert lines[0] == "tiny-model  changed: revision 0123456 -> bbbbbbb"
+    assert lines[0] == ("tiny-model  changed: revision 0123456 -> bbbbbbb; "
+                        "onnx/model_quantized.onnx content changed, same size (100 bytes)")
     assert lines[-1].startswith("Nothing written. Run with --write")
     assert text_of(folder) == ENTRY
 
 
-def test_write_replaces_only_the_hash_and_the_file_still_passes_the_catalog_check(tmp_path):
+def test_a_file_without_a_blob_id_cannot_prove_the_files_are_the_same(tmp_path):
     folder = folder_with(tmp_path, **{"tiny-model": ENTRY})
-    repos = tiny_repos(**{"Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source")})
+    no_ids = {name: id_ for name, id_ in BLOBS.items() if name != "tokenizer.json"}
+    repos = tiny_repos(**{"Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source", blobs=no_ids)})
+
+    code, lines, _ = go(folder, repos)
+
+    assert code == 1
+    assert lines[0] == ("tiny-model  changed: revision 0123456 -> bbbbbbb; "
+                        "tokenizer.json cannot be compared, the Hub gave no blob id")
+
+
+def test_write_replaces_only_the_hash_when_a_file_changed_at_the_same_size(tmp_path):
+    folder = folder_with(tmp_path, **{"tiny-model": ENTRY})
+    repos = tiny_repos(**{"Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source", blobs=RETOUCHED)})
 
     code, lines, _ = go(folder, repos, write=True)
 
     assert code == 0
-    assert lines[0] == "tiny-model  changed (rewritten): revision 0123456 -> bbbbbbb"
+    assert lines[0] == ("tiny-model  changed (rewritten): revision 0123456 -> bbbbbbb; "
+                        "onnx/model_quantized.onnx content changed, same size (100 bytes)")
     assert text_of(folder) == ENTRY.replace(OLD_HASH, NEW_HASH)
     assert catalog.read_entry(folder / "tiny-model.yaml").revision == NEW_HASH
+
+
+def test_a_changed_size_comes_with_the_new_hash_in_the_line_and_the_file(tmp_path):
+    folder = folder_with(tmp_path, **{"tiny-model": ENTRY})
+    files = {**SHARED, "tokenizer.json": 25}
+    repos = tiny_repos(**{"Org/tiny-model": card(files, sha=NEW_HASH, base_model="org/tiny-source")})
+
+    code, lines, _ = go(folder, repos, write=True)
+
+    assert code == 0
+    assert lines[0] == "tiny-model  changed (rewritten): revision 0123456 -> bbbbbbb; tokenizer.json 20 -> 25 bytes"
+    assert text_of(folder) == ENTRY.replace(OLD_HASH, NEW_HASH).replace("tokenizer.json: 20", "tokenizer.json: 25")
+
+
+# --- the pinned revision ---------------------------------------------------------------
+
+
+def test_a_pinned_revision_the_hub_no_longer_has_is_an_error_and_write_does_not_touch_it(tmp_path):
+    folder = folder_with(tmp_path, **{"tiny-model": ENTRY})
+    repos = tiny_repos(**{"Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source")})
+
+    code, lines, _ = go(folder, repos, {"Org/tiny-model": revision_gone()}, write=True)
+
+    assert code == 1
+    assert lines[0] == ("tiny-model  changed: revision 0123456 -> bbbbbbb | ERROR: the pinned revision 0123456 "
+                        "is gone from Hugging Face, so downloading this model fails for everyone who installed cifarium")
+    assert lines[1] == "1 entries: 0 unchanged, 0 changed, 0 to check by hand, 1 with errors; 0 files rewritten"
+    assert text_of(folder) == ENTRY
+
+
+def test_a_network_error_on_the_pinned_revision_is_an_error_that_says_so(tmp_path):
+    folder = folder_with(tmp_path, **{"tiny-model": ENTRY})
+    repos = tiny_repos(**{"Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source")})
+
+    code, lines, _ = go(folder, repos, {"Org/tiny-model": ConnectError("timed out")})
+
+    assert code == 1
+    assert lines[0] == ("tiny-model  ERROR: could not check the pinned revision 0123456: "
+                        "Could not read Org/tiny-model on Hugging Face: timed out")
+
+
+def test_a_pinned_revision_that_is_the_newest_is_not_asked_for_again(tmp_path):
+    folder = folder_with(tmp_path, **{"tiny-model": ENTRY})
+
+    _, _, api = go(folder, tiny_repos(), {"Org/tiny-model": revision_gone()})
+
+    assert api.calls == ["Org/tiny-model", "org/tiny-source"]
+
+
+def test_a_newer_hash_over_the_same_files_does_not_hide_a_license_mismatch(tmp_path):
+    folder = folder_with(tmp_path, **{"tiny-model": ENTRY})
+    repos = tiny_repos(**{
+        "Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source"),
+        "org/tiny-source": card(license="MIT"),
+    })
+
+    code, lines, _ = go(folder, repos, write=True)
+
+    assert code == 1
+    assert lines[0] == ("tiny-model  check by hand: license is apache-2.0, the card of org/tiny-source says mit"
+                        " | newer revision bbbbbbb has the same files")
+    assert text_of(folder) == ENTRY
 
 
 def test_a_changed_size_names_the_file(tmp_path):
@@ -178,14 +292,15 @@ def test_a_vanished_common_file_is_an_error_for_that_entry_and_the_others_go_on(
     without_tokenizer = {name: size for name, size in SHARED.items() if name != "tokenizer.json"}
     repos = tiny_repos(**{
         "Org/tiny-model": card(without_tokenizer, base_model="org/tiny-source"),
-        "Org/other-model": card(sha=NEW_HASH, base_model="org/other-source"),
+        "Org/other-model": card(sha=NEW_HASH, base_model="org/other-source", blobs=RETOUCHED),
         "org/other-source": card(license="apache-2.0"),
     })
 
     code, lines, _ = go(folder, repos, write=True)
 
     assert code == 1
-    assert lines[0] == "other-model  changed (rewritten): revision 0123456 -> bbbbbbb"
+    assert lines[0] == ("other-model  changed (rewritten): revision 0123456 -> bbbbbbb; "
+                        "onnx/model_quantized.onnx content changed, same size (100 bytes)")
     assert lines[1] == "tiny-model   ERROR: common file missing on the Hub: tokenizer.json"
     assert "1 changed, 0 to check by hand, 1 with errors; 1 files rewritten" in lines[2]
     assert text_of(folder) == ENTRY
@@ -237,14 +352,15 @@ def test_a_network_error_names_the_repository_and_the_other_entries_are_still_ch
 def test_a_license_mismatch_is_only_shown_and_the_exit_code_stays_one_even_with_write(tmp_path):
     folder = folder_with(tmp_path, **{"tiny-model": ENTRY})
     repos = tiny_repos(**{
-        "Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source"),
+        "Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source", blobs=RETOUCHED),
         "org/tiny-source": card(license="MIT"),
     })
 
     code, lines, _ = go(folder, repos, write=True)
 
     assert code == 1
-    assert lines[0] == ("tiny-model  changed (rewritten): revision 0123456 -> bbbbbbb | "
+    assert lines[0] == ("tiny-model  changed (rewritten): revision 0123456 -> bbbbbbb; "
+                        "onnx/model_quantized.onnx content changed, same size (100 bytes) | "
                         "check by hand: license is apache-2.0, the card of org/tiny-source says mit")
     assert text_of(folder) == ENTRY.replace(OLD_HASH, NEW_HASH)  # license, recipes and the rest are as they were
 
@@ -330,7 +446,7 @@ def test_a_file_that_fails_the_catalog_check_after_writing_is_restored(tmp_path,
         return real(path)
 
     monkeypatch.setattr(catalog, "read_entry", strict)
-    repos = tiny_repos(**{"Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source")})
+    repos = tiny_repos(**{"Org/tiny-model": card(sha=NEW_HASH, base_model="org/tiny-source", blobs=RETOUCHED)})
 
     code, lines, _ = go(folder, repos, write=True)
 

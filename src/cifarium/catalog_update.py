@@ -1,10 +1,13 @@
 """Service command: compare the catalog with Hugging Face and refresh the pinned facts.
 
 For every entry it asks the Hub for the newest revision, applies the file-picking rule of
-ARCHITECTURE.md, section 4, and reports what differs from the entry. By default it writes
-nothing. With ``write`` it rewrites only ``revision``, ``common_files`` and ``variants``;
-the fields a person checks by hand (``license``, ``license_source``, ``languages``,
-``recipes``) are never touched, a license mismatch is only shown.
+ARCHITECTURE.md, section 4, and reports what differs from the entry. When the newest revision
+is not the pinned one it also asks for the pinned revision: if the Hub no longer has it that is
+an error (downloads of the model are broken), and if both hold the same files a newer hash
+alone is not a change. By default it writes nothing. With ``write`` it rewrites only
+``revision``, ``common_files`` and ``variants``; the fields a person checks by hand
+(``license``, ``license_source``, ``languages``, ``recipes``) are never touched, a license
+mismatch is only shown.
 """
 
 from __future__ import annotations
@@ -56,6 +59,9 @@ class Result:
     notes: list[str] = field(default_factory=list)
     """Differences in fields that a person checks by hand."""
     errors: list[str] = field(default_factory=list)
+    newer: str | None = None
+    """Hash of a newer revision that holds exactly the files of the pinned one. Not a change:
+    ``write`` leaves the entry alone and the exit code stays 0."""
     written: bool = False
 
     @property
@@ -67,7 +73,11 @@ class Result:
             parts.append("check by hand: " + "; ".join(self.notes))
         if self.errors:
             parts.append("ERROR: " + "; ".join(self.errors))
-        return " | ".join(parts) or "unchanged"
+        text = " | ".join(parts)
+        if self.newer:
+            remark = f"newer revision {self.newer[:7]} has the same files"
+            return f"{text} | {remark}" if text else f"unchanged ({remark})"
+        return text or "unchanged"
 
 
 def fresh_of(entry: catalog.Entry) -> Fresh:
@@ -111,15 +121,35 @@ def _file_changes(old: dict[str, int], new: dict[str, int]) -> list[str]:
 
 
 def diff(entry: catalog.Entry, fresh: Fresh) -> list[str]:
-    """What differs between the entry and the fresh facts, one short phrase each."""
+    """What differs in the files and the dtype between the entry and the fresh facts.
+
+    The revision is not part of it: a new hash alone is not a change, see :func:`check`.
+    """
     old = fresh_of(entry)
-    changes = []
-    if old.revision != fresh.revision:
-        changes.append(f"revision {old.revision[:7]} -> {fresh.revision[:7]}")
-    changes += _file_changes(old.common_files, fresh.common_files)
+    changes = _file_changes(old.common_files, fresh.common_files)
     if old.dtype != fresh.dtype:
         changes.append(f"dtype {old.dtype} -> {fresh.dtype}")
-    changes += _file_changes(old.files, fresh.files)
+    return changes + _file_changes(old.files, fresh.files)
+
+
+def _content_changes(entry: catalog.Entry, pinned: hub.RepoInfo, latest: hub.RepoInfo,
+                     fresh: Fresh) -> list[str]:
+    """Files of the same name and size whose content still differs, by ``blob_id``.
+
+    A file with another size is already named by :func:`diff`. A missing id on either side
+    cannot prove the files are the same, so it counts as a difference.
+    """
+    old = fresh_of(entry)
+    before = {**old.common_files, **old.files}
+    changes = []
+    for name, size in sorted({**fresh.common_files, **fresh.files}.items()):
+        if before.get(name) != size:
+            continue
+        was, now = pinned.blobs.get(name), latest.blobs.get(name)
+        if not was or not now:
+            changes.append(f"{name} cannot be compared, the Hub gave no blob id")
+        elif was != now:
+            changes.append(f"{name} content changed, same size ({size} bytes)")
     return changes
 
 
@@ -156,10 +186,37 @@ def check(entry: catalog.Entry, api: HfApi) -> Result:
             raise Problem("the repository now needs a signed-in account (gated)")
         result.fresh = pick(info)
         result.changes = diff(entry, result.fresh)
+        if info.revision != entry.revision:
+            _compare_with_pinned(entry, info, result, api)
         result.notes = _license_notes(entry, info, api)
     except (Problem, hub.HubError) as error:
         result.errors.append(str(error))
     return result
+
+
+def _compare_with_pinned(entry: catalog.Entry, latest: hub.RepoInfo, result: Result, api: HfApi) -> None:
+    """Decide what the newer hash means: a change, or only a newer hash over the same files.
+
+    A new hash is also what an edit of the model card makes. Rewriting the entry for it would
+    rename the model's folder in every build and clear every cache for nothing, so the entry
+    changes only when the files differ: names, dtype, sizes or ``blob_id``.
+    """
+    short = entry.revision[:7]
+    try:
+        pinned = hub.repo_info(entry.repo, revision=entry.revision, api=api)
+    except hub.RevisionNotFound:
+        # What the newest revision holds is still shown, to help re-pin by hand; the error
+        # stops ``write`` from touching the entry.
+        result.changes.insert(0, f"revision {short} -> {latest.revision[:7]}")
+        raise Problem(f"the pinned revision {short} is gone from Hugging Face, so downloading "
+                      "this model fails for everyone who installed cifarium") from None
+    except hub.HubError as error:
+        raise Problem(f"could not check the pinned revision {short}: {error}") from None
+    result.changes += _content_changes(entry, pinned, latest, result.fresh)
+    if result.changes:
+        result.changes.insert(0, f"revision {short} -> {latest.revision[:7]}")
+    else:
+        result.newer = latest.revision
 
 
 def rewrite(text: str, fresh: Fresh) -> str:
