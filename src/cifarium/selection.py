@@ -38,7 +38,7 @@ READY_RECIPES = frozenset({"embed-centroid"})
 # examples is not Latin (ARCHITECTURE.md, section 12, question 8).
 NON_LATIN_SHARE = 0.5
 
-Bench = Callable[[catalog.Candidate, Sequence[str]], np.ndarray]
+Embed = Callable[[catalog.Candidate, Sequence[str]], np.ndarray]
 """Candidate and example texts -> one vector of unit length per text, as the bench returns
 them. Raises :class:`~cifarium.bench.BenchError` when the candidate cannot run."""
 
@@ -94,7 +94,7 @@ def select(
     config: Config,
     examples: Examples,
     candidates: Sequence[catalog.Candidate],
-    bench: Bench,
+    bench: Embed,
     *,
     engine_bytes: int | None = None,
     report: Callable[[Outcome], object] | None = None,
@@ -199,7 +199,7 @@ def _check_examples(expected: Sequence[str], names: Sequence[str], pass_rate: fl
 
 def _run(
     candidate: catalog.Candidate,
-    bench: Bench,
+    bench: Embed,
     texts: Sequence[str],
     expected: Sequence[str],
     names: Sequence[str],
