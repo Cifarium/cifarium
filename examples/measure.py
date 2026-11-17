@@ -106,7 +106,7 @@ def main() -> int:
     text = "\n".join(lines)
     print(text)
     if args.report:
-        args.report.write_text(text + "\n", encoding="utf-8")
+        args.report.write_text(text + "\n", encoding="utf-8", newline="\n")
     return 0
 
 
