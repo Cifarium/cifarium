@@ -92,10 +92,11 @@ def test_the_nearest_centre_wins_and_its_dot_product_is_the_score():
 
 
 def test_a_tie_goes_to_the_label_listed_first():
-    centres = np.array([angle(0), angle(90)])
-    best, _ = evaluate.predict(np.array([angle(45)]), centres)
+    # Exact numbers: sin and cos of 45 degrees may differ in the last bit on some systems.
+    centres = np.array([[1.0, 0.0], [0.0, 1.0]])
+    best, _ = evaluate.predict(np.array([unit(1, 1)]), centres)
     assert best.tolist() == [0]
-    best, _ = evaluate.predict(np.array([angle(45)]), centres[::-1])
+    best, _ = evaluate.predict(np.array([unit(1, 1)]), centres[::-1])
     assert best.tolist() == [0]
 
 
