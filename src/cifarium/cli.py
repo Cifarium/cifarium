@@ -4,21 +4,28 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+import traceback
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from . import __version__
+from . import __version__, exitcodes
 from .config import DEFAULT_FILE
 from .examples import DEFAULT_FILE as EXAMPLES_FILE
 
 STARTER_DIR = Path(__file__).resolve().parent / "starter"
 STARTER_FILES = (DEFAULT_FILE, EXAMPLES_FILE)
 
+EXIT_CODES_HELP = (
+    "Exit codes: 0 done, 1 no model fits, 2 the settings, the examples or the command line are "
+    "wrong, 3 the environment failed (Chrome, the network, the disk)."
+)
+
 
 def run_init(folder: Path) -> int:
     """Write the starter settings and examples into ``folder``. Never overwrites.
 
-    Either both files are written or none: a file written before a failure is removed.
+    Either both files are written or none: a file written before a failure is removed. Exit code
+    (:mod:`exitcodes`): 0 written; 2 a file is already there; 3 the folder cannot be written.
     """
     existing = [name for name in STARTER_FILES if (folder / name).exists()]
     if existing:
@@ -27,7 +34,7 @@ def run_init(folder: Path) -> int:
             "cifarium init never overwrites files.",
             file=sys.stderr,
         )
-        return 1
+        return exitcodes.BAD_INPUT
     written: list[Path] = []
     for name in STARTER_FILES:
         target = folder / name
@@ -43,17 +50,33 @@ def run_init(folder: Path) -> int:
             else:
                 reason = f"cannot write {name}: {err.strerror or err}"
             print(f"Nothing written to {folder}: {reason}.", file=sys.stderr)
-            return 1
+            return exitcodes.ENVIRONMENT
     print(f"Wrote {' and '.join(STARTER_FILES)} to {folder}")
     print(f"Next: put your own examples into {EXAMPLES_FILE}, one per line,")
     print(f"at least two for every label, and list your labels in {DEFAULT_FILE}.")
-    return 0
+    return exitcodes.DONE
+
+
+def _guarded(command: Callable[[], int]) -> int:
+    """Run a command; a failure nobody planned for is printed with its traceback and exits with
+    the code of the environment, so that 1 keeps meaning only "no model fits"."""
+    try:
+        return command()
+    except Exception:  # noqa: BLE001 - this is the last place that can keep the exit codes true
+        traceback.print_exc()
+        print(
+            "\nFAILED: cifarium stopped on something it did not expect (the traceback is above). "
+            "Please report it at https://github.com/Cifarium/cifarium/issues",
+            file=sys.stderr,
+        )
+        return exitcodes.ENVIRONMENT
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cifarium",
         description="Find the smallest model that handles your examples right in the browser.",
+        epilog=EXIT_CODES_HELP,
     )
     parser.add_argument("--version", action="version", version=f"cifarium {__version__}")
     commands = parser.add_subparsers(dest="command", metavar="<command>")
@@ -63,7 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"write a starter {DEFAULT_FILE} and {EXAMPLES_FILE} into the current folder",
         description=(
             f"Write a starter {DEFAULT_FILE} and {EXAMPLES_FILE} for a classification task "
-            "into the current folder. Writes nothing if either file is already there."
+            "into the current folder. Writes nothing if either file is already there. "
+            "Exit code 0 when both files were written, 2 when a file is already there, 3 when the "
+            "folder cannot be written."
         ),
     )
 
@@ -74,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Read the settings and the examples, download the engine and the candidate models "
             "into the cache, run them in the installed Chrome from the lightest, and print why "
             "each one was or was not taken and which model was chosen. Then write the folder for "
-            "the site to the `output` of the settings. Exit code 0 when the folder was written, 1 otherwise."
+            "the site to the `output` of the settings. " + EXIT_CODES_HELP
         ),
     )
     build.add_argument(
@@ -111,12 +136,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "init":
-        return run_init(Path.cwd())
+        return _guarded(lambda: run_init(Path.cwd()))
     if args.command == "build":
         # Imported here so that `cifarium --help` does not load Playwright and numpy.
-        from . import build
+        def build_command() -> int:
+            from . import build
 
-        return build.run(args.settings, headed=args.headed)
+            return build.run(args.settings, headed=args.headed)
+
+        return _guarded(build_command)
     if args.command == "catalog-update":
         from . import catalog_update
 

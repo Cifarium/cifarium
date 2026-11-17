@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from test_bundle import GRAPH, MODEL_FILES, Sources, fill, fill_engine
 
-from cifarium import bundle, paths
+from cifarium import bundle, catalog, cli, config, exitcodes, paths
 
 RUNTIME = paths.web_dir() / "runtime"
 ROOT = Path(__file__).resolve().parents[1]
@@ -199,6 +199,85 @@ def test_the_runtime_sends_nothing_anywhere_by_its_source():
     page_code = re.sub(r"<!--.*?-->|/\*.*?\*/", "", page, flags=re.DOTALL)
     assert not re.search(r"(?:src|href|action)\s*=\s*[\"']?(?:https?:)?//", page_code)
     assert not re.search(r"https?://", page_code)
+
+
+# --- the settings, the exit codes, the license file -------------------------------------------------
+
+
+def test_the_keys_and_the_values_of_the_settings_are_the_contract():
+    assert config.KEYS == ("task", "examples", "labels", "pass_rate", "limits", "license", "host", "output")
+    assert config.LIMIT_KEYS == ("max_size_mb", "max_latency_ms")
+    assert config.TASKS == ("classify", "search", "summarize")
+    assert config.SUPPORTED_TASKS == ("classify",)
+    assert config.LICENSES == ("permissive", "any")
+    assert config.HOSTS == ("bundle", "hub")
+    # The licenses `license: permissive` lets through.
+    assert catalog.PERMISSIVE_LICENSES == {"apache-2.0", "mit", "bsd-2-clause", "bsd-3-clause"}
+
+
+def test_the_keys_of_tasks_that_are_not_released_are_reserved_and_the_old_license_value_is_renamed():
+    assert config.RESERVED == {"documents": "search", "similarity": "summarize",
+                               "limits.min_tokens_per_sec": "summarize"}
+    assert config.RENAMED == {"license": {"commercial": "permissive"}}
+
+
+def test_the_defaults_of_the_settings_are_the_contract(tmp_path):
+    # Changing one does not break a settings file but changes what a build does: CHANGELOG.md says so.
+    (tmp_path / "examples.jsonl").write_text('{"input": "a", "expected": "x"}\n', encoding="utf-8")
+    (tmp_path / "cifarium.yaml").write_text("task: classify\nexamples: examples.jsonl\n", encoding="utf-8")
+
+    settings = config.load(tmp_path / "cifarium.yaml")
+
+    assert (settings.pass_rate, settings.license, settings.host) == (0.85, "permissive", "bundle")
+    assert settings.limits == config.Limits(max_size_mb=300.0, max_latency_ms=None)
+    assert settings.labels is None
+    assert settings.output == (tmp_path / "cifarium-out").resolve()
+    assert config.DEFAULT_OUTPUT == "./cifarium-out" and config.DEFAULT_FILE == "cifarium.yaml"
+
+
+def test_the_starter_settings_hold_the_defaults_they_show():
+    text = (Path(cli.STARTER_DIR) / "cifarium.yaml").read_text(encoding="utf-8")
+
+    for line in ("pass_rate: 0.85", "max_size_mb: 300", "license: permissive", "host: bundle",
+                 "output: ./cifarium-out"):
+        assert line in text, line
+
+
+def test_the_exit_codes_are_the_contract():
+    assert exitcodes.CODES == {"DONE": 0, "NO_MODEL": 1, "BAD_INPUT": 2, "ENVIRONMENT": 3}
+
+
+def test_the_help_of_the_commands_names_the_exit_codes(capsys):
+    for argv in (["--help"], ["build", "--help"], ["init", "--help"]):
+        with pytest.raises(SystemExit):
+            cli.main(argv)
+        text = " ".join(capsys.readouterr().out.split())
+        assert "0 " in text and "2 " in text and "3 " in text, argv
+
+
+def test_the_license_file_has_these_parts_in_this_order(sources, tmp_path):
+    # The names of the parts and the full texts of the two licenses are the contract; the words
+    # between them are not.
+    out = tmp_path / "out"
+    sources.write(out)
+
+    text = (out / "LICENSES.txt").read_text(encoding="utf-8")
+    headings = [line for line in text.splitlines() if line and not line.startswith(" ")
+                and (line.startswith(("cifarium runtime", "Transformers.js ", "ONNX Runtime Web ", "The model: "))
+                     or line.endswith(("Transformers.js", "ONNX Runtime")))]
+    assert [heading.split(":")[0] for heading in headings] == [
+        "cifarium runtime", "Transformers.js 4.3.2", "ONNX Runtime Web 1.31.0-dev.20260914-8d85527a0",
+        "The model", "Apache License 2.0", "MIT License",
+    ]
+    assert text.index("Apache License\nVersion 2.0") < text.index("MIT License\n\nCopyright (c)")
+    assert text.startswith("Licenses of the files in this folder\n")
+    assert "\r" not in text
+
+
+def test_the_catalog_fields_a_license_file_is_made_from_are_the_contract():
+    assert catalog.KEYS == ("id", "repo", "revision", "license", "license_source", "notice", "languages",
+                            "common_files", "variants", "recipes")
+    assert catalog.RECIPES["embed-centroid"].keys() == {"pooling", "prefix", "dimensions"}
 
 
 # --- the files around ------------------------------------------------------------------------------

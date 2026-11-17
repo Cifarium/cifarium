@@ -47,7 +47,7 @@ def test_init_never_overwrites(tmp_path, monkeypatch, capsys, existing):
     monkeypatch.chdir(tmp_path)
     (tmp_path / existing).write_text("mine", encoding="utf-8")
 
-    assert cli.main(["init"]) == 1
+    assert cli.main(["init"]) == 2  # exitcodes.BAD_INPUT: the input is the folder, and it is taken
 
     assert (tmp_path / existing).read_text(encoding="utf-8") == "mine"
     assert [path.name for path in tmp_path.iterdir()] == [existing]
@@ -58,7 +58,7 @@ def test_init_where_it_cannot_write_says_so_and_leaves_nothing(tmp_path, capsys)
     not_a_folder = tmp_path / "file.txt"
     not_a_folder.write_text("", encoding="utf-8")
 
-    assert cli.run_init(not_a_folder) == 1
+    assert cli.run_init(not_a_folder) == 3  # exitcodes.ENVIRONMENT: the disk, not the input
 
     assert "Nothing written" in capsys.readouterr().err
     assert [path.name for path in tmp_path.iterdir()] == ["file.txt"]
@@ -74,10 +74,16 @@ def test_init_removes_the_first_file_when_the_second_fails(tmp_path, monkeypatch
 
     monkeypatch.setattr(cli, "open", open_failing_on_examples, raising=False)
 
-    assert cli.run_init(tmp_path) == 1
+    assert cli.run_init(tmp_path) == 3
 
     assert list(tmp_path.iterdir()) == []
     assert "cannot write examples.jsonl: Permission denied" in capsys.readouterr().err
+
+
+def test_init_that_writes_exits_with_code_0(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["init"]) == 0
 
 
 def test_help_lists_init(capsys):

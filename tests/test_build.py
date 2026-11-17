@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from cifarium import build, bundle, catalog, cli, hub, vendor
+from cifarium import build, bundle, catalog, cli, exitcodes, hub, vendor
 from cifarium.bench import BenchError
 from cifarium.build import LATENCY, Speed, choose
 from cifarium.config import Config, Label, Limits
@@ -345,7 +345,7 @@ def test_run_writes_to_the_output_of_the_settings_and_says_what_it_removed(tmp_p
     assert "removed 2 files of the previous build that this one does not use" in out
 
 
-def test_a_folder_that_cannot_be_written_ends_with_its_message_and_code_1(tmp_path, chrome, monkeypatch, capsys):
+def test_a_folder_that_cannot_be_written_ends_with_its_message_and_code_3(tmp_path, chrome, monkeypatch, capsys):
     def fail(*args, **kwargs):
         raise bundle.BundleError("cannot write the folder: Access is denied")
 
@@ -354,16 +354,16 @@ def test_a_folder_that_cannot_be_written_ends_with_its_message_and_code_1(tmp_pa
     code = build.run(write_task(tmp_path))
 
     out, err = capsys.readouterr()
-    assert code == 1
+    assert code == exitcodes.ENVIRONMENT == 3
     assert "FAILED: cannot write the folder: Access is denied" in err
     assert "Traceback" not in err and "Wrote " not in out
 
 
-def test_host_hub_is_refused_before_the_bench_starts(tmp_path, chrome, capsys):
+def test_host_hub_is_refused_before_the_bench_starts_with_code_2(tmp_path, chrome, capsys):
     code = build.run(write_task(tmp_path, "host: hub\n"))
 
     out, err = capsys.readouterr()
-    assert code == 1
+    assert code == exitcodes.BAD_INPUT == 2
     assert "host: hub is not supported yet" in err and "host: bundle" in err
     assert out == "" and chrome.jobs == [] and chrome.downloads == [] and chrome.written == []
 
@@ -392,7 +392,7 @@ def test_run_goes_past_slow_models_and_fails_when_none_is_fast_enough(tmp_path, 
     code = build.run(write_task(tmp_path, "license: permissive\nlimits:\n  max_latency_ms: 5\n"))
 
     out, err = capsys.readouterr()
-    assert code == 1
+    assert code == exitcodes.NO_MODEL == 1
     assert "FAILED: no model passed" in err
     assert "Chosen" not in out and "Wrote " not in out and chrome.written == []
     # Every vector model of the catalog that the settings let through ran once and was too slow.
@@ -436,7 +436,7 @@ def test_a_page_that_ignores_one_thread_is_not_taken_for_a_single_thread_measure
      ("engine", vendor.VendorError("Could not download onnxruntime-web: offline")),
      ("chrome", BenchError("Could not start Google Chrome: no such file"))],
 )
-def test_a_download_or_chrome_failure_ends_with_its_message_and_code_1(tmp_path, chrome, monkeypatch, capsys,
+def test_a_download_or_chrome_failure_ends_with_its_message_and_code_3(tmp_path, chrome, monkeypatch, capsys,
                                                                        where, error):
     def fail(*args, **kwargs):
         raise error
@@ -448,18 +448,85 @@ def test_a_download_or_chrome_failure_ends_with_its_message_and_code_1(tmp_path,
     code = build.run(write_task(tmp_path))
 
     _, err = capsys.readouterr()
-    assert code == 1
+    assert code == exitcodes.ENVIRONMENT == 3
     assert f"FAILED: {error}" in err
     assert "Traceback" not in err
 
 
-def test_settings_that_do_not_load_end_with_their_problems_and_code_1(tmp_path, chrome, capsys):
+def test_a_disk_or_permission_error_in_the_cache_is_the_environment_too(tmp_path, chrome, monkeypatch, capsys):
+    def fail(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(vendor, "ensure_engine", fail)
+
+    code = build.run(write_task(tmp_path))
+
+    _, err = capsys.readouterr()
+    assert code == 3 and "FAILED: " in err and "Permission denied" in err and "Traceback" not in err
+
+
+def test_settings_that_do_not_load_end_with_their_problems_and_code_2(tmp_path, chrome, capsys):
     code = build.run(tmp_path / "cifarium.yaml")
 
     _, err = capsys.readouterr()
-    assert code == 1
+    assert code == exitcodes.BAD_INPUT == 2
     assert "cifarium.yaml" in err
     assert chrome.jobs == []
+
+
+def test_examples_that_do_not_load_end_with_their_problems_and_code_2(tmp_path, chrome, capsys):
+    settings = write_task(tmp_path)
+    (tmp_path / "examples.jsonl").write_text('{"input": "a"}\n', encoding="utf-8")
+
+    code = build.run(settings)
+
+    _, err = capsys.readouterr()
+    assert code == 2 and "line 1" in err
+    assert chrome.jobs == [] and chrome.downloads == []
+
+
+@pytest.mark.parametrize("line", ["license: commercial", "documents: ./d.jsonl", "pass_rate: 85", "host: cdn"])
+def test_every_kind_of_wrong_setting_is_code_2_and_starts_nothing(tmp_path, chrome, capsys, line):
+    code = build.run(write_task(tmp_path, line + "\n"))
+
+    _, err = capsys.readouterr()
+    assert code == 2 and err.strip()
+    assert chrome.jobs == [] and chrome.downloads == [] and chrome.written == []
+
+
+def test_a_catalog_that_cannot_be_read_is_a_damaged_installation_code_3(tmp_path, chrome, monkeypatch, capsys):
+    def broken(task):
+        raise catalog.CatalogError(Path("catalog/x.yaml"), ["revision: missing"])
+
+    monkeypatch.setattr(catalog, "candidates", broken)
+
+    code = build.run(write_task(tmp_path))
+
+    _, err = capsys.readouterr()
+    assert code == 3
+    assert "x.yaml: revision: missing" in err and "install cifarium again" in err
+    assert chrome.jobs == []
+
+
+def test_what_cifarium_did_not_expect_is_code_3_with_the_traceback_and_never_1(tmp_path, chrome, monkeypatch, capsys):
+    def surprise(*args, **kwargs):
+        raise KeyError("a bug")
+
+    monkeypatch.setattr(build, "choose", surprise)
+
+    code = cli.main(["build", str(write_task(tmp_path))])
+
+    _, err = capsys.readouterr()
+    assert code == 3
+    assert "Traceback" in err and "KeyError" in err and "did not expect" in err and "issues" in err
+
+
+def test_an_unknown_command_or_flag_is_code_2(capsys):
+    for argv in (["nonsense"], ["build", "--bogus"]):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(argv)
+        assert caught.value.code == 2
+    capsys.readouterr()
 
 
 def test_text_a_narrow_code_page_cannot_show_becomes_question_marks(monkeypatch):

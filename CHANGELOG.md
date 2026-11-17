@@ -40,3 +40,22 @@ The first contracts. Nothing was published before, so nothing is a break.
   text of an example. The same input gives the same bytes.
 - Headers go on `/`, `/index.html`, `/cifarium-worker.js` and `/vendor/*`; `hosting/_headers` is
   read by Netlify and by Cloudflare Pages.
+- Settings (`cifarium.yaml`): the keys `task`, `examples`, `labels`, `pass_rate`, `limits`
+  (`max_size_mb`, `max_latency_ms`), `license`, `host`, `output`. `license` is `permissive`
+  (Apache-2.0, MIT, BSD: the default) or `any`; the value `commercial` of the development builds is
+  refused with a hint to write `permissive`, because Gemma allows commercial use under terms of its
+  own and `commercial` hid it for that reason. The keys of tasks that are not released
+  (`documents`, `similarity`, `limits.min_tokens_per_sec`) answer "reserved in this version" whatever
+  their value. The defaults are part of the contract: `pass_rate` 0.85, `limits.max_size_mb` 300,
+  no `limits.max_latency_ms`, `license` permissive, `host` bundle, `output` `./cifarium-out`.
+- Exit codes of `build` and `init`: 0 done, 1 no model fits, 2 the settings, the examples or the
+  command line are wrong (`init`: a file is already there), 3 the environment failed (Chrome, the
+  network, the cache, the disk, the installation; `init`: the folder cannot be written; also an
+  error cifarium did not expect, with its traceback). `catalog-update` keeps its own codes.
+- One weight of a first visit: the engine, the data of the recipe and the files of the processor's
+  variant (`bundle.first_load`). The model selection, `limits.max_size_mb`, the line "a first visit
+  downloads" of `build` and `info().bytes` of the runtime all give this number; the selection used to
+  leave out the data of the labels and count the heaviest variant, so a model close to the limit may
+  now be taken or refused the other way.
+- `LICENSES.txt` holds the full texts of Apache-2.0 (Transformers.js and the cifarium runtime) and
+  MIT (ONNX Runtime) and, for a model whose license is not permissive, the notice its terms ask for.

@@ -24,7 +24,7 @@ from typing import Any
 
 import numpy as np
 
-from . import bundle, catalog, config, evaluate, examples, hub, selection, vendor
+from . import bundle, catalog, config, evaluate, examples, exitcodes, hub, selection, vendor
 from .bench import Bench, BenchError, decode_vectors, embed_job, open_bench
 from .selection import BYTES_PER_MB, Outcome, Verdict
 
@@ -219,21 +219,28 @@ def download(entry: catalog.Entry, say: Callable[[str], None]) -> None:
 
 
 def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = False) -> int:
-    """Run the command and return the process exit code: 0 when a model was chosen and the
-    folder written, 1 otherwise."""
+    """Run the command and return the process exit code (:mod:`exitcodes`): 0 when a model was chosen
+    and the folder written; 1 when no model fits; 2 when the settings or the examples are wrong;
+    3 when the environment failed (Chrome, the network, the cache, the disk)."""
     _tolerate_any_text()
     try:
         settings = config.load(path)
         items = examples.load(settings)
-        candidates = catalog.candidates(settings.task)
-    except config.TaskFileError as error:
+    except config.TaskFileError as error:  # ConfigError and ExamplesError
         print(error, file=sys.stderr)
-        return 1
+        return exitcodes.BAD_INPUT
+    try:
+        candidates = catalog.candidates(settings.task)
+    except catalog.CatalogError as error:
+        # The catalog is a file of the package, not of the user: the installation is damaged.
+        print(f"{error}\nFAILED: the model catalog that came with cifarium cannot be read; "
+              "install cifarium again.", file=sys.stderr)
+        return exitcodes.ENVIRONMENT
     if settings.host != "bundle":
         # Before the bench: a long run must not end in a folder the settings did not ask for.
         print(f"{settings.path}: host: {settings.host} is not supported yet: the folder always carries "
               "the model. Use `host: bundle` or leave the key out.", file=sys.stderr)
-        return 1
+        return exitcodes.BAD_INPUT
 
     texts = [item.input for item in items.items]
     limit = settings.limits.max_latency_ms
@@ -262,9 +269,9 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
                     single = embed.single_thread(chosen.outcome.candidate, texts)
                 except BenchError as error:
                     single = _first_line(error)
-    except (vendor.VendorError, hub.HubError, BenchError) as error:
+    except (vendor.VendorError, hub.HubError, BenchError, OSError) as error:
         print(f"\nFAILED: {error}", file=sys.stderr)
-        return 1
+        return exitcodes.ENVIRONMENT
 
     _say("\nEvery candidate:")
     for line in describe_table(result.rows):
@@ -273,7 +280,7 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
         _say("\nNo model was chosen: the table says why each one was not taken.")
         print("\nFAILED: no model passed. More examples per label, a lower `pass_rate`, wider "
               "`limits` or `license: any` in the settings may let one through.", file=sys.stderr)
-        return 1
+        return exitcodes.NO_MODEL
     _say("")
     for line in describe_chosen(chosen, single, items.items):
         _say(line)
@@ -285,11 +292,11 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
         built = bundle.write(settings.output, chosen.outcome.candidate, items.labels, centres)
     except bundle.BundleError as error:
         print(f"\nFAILED: {error}", file=sys.stderr)
-        return 1
+        return exitcodes.ENVIRONMENT
     _say("")
     for line in describe_built(built):
         _say(line)
-    return 0
+    return exitcodes.DONE
 
 
 def describe_built(built: bundle.Built) -> list[str]:
