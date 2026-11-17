@@ -1,6 +1,7 @@
-# cifarium: headers for Netlify. Copy this file into the folder you publish and keep its name,
-# `_headers`. If the build folder is a subfolder of your site, put its path in front of every
-# path below (/cifarium/index.html, /cifarium/vendor/*, ...).
+# cifarium: headers for Netlify and Cloudflare Pages. Both read a file named `_headers` in the
+# folder you publish, in this format. Copy this file there and keep its name. If the build
+# folder is a subfolder of your site, put its path in front of every path below
+# (/cifarium/index.html, /cifarium/vendor/*, ...).
 #
 # The model computes in several threads only on a page that is cross-origin isolated. The two
 # headers make it so. They go on the page that runs the model, on cifarium-worker.js and on

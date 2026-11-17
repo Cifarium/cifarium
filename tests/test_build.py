@@ -221,8 +221,12 @@ class Written:
 
     folder: Path
     candidate: catalog.Candidate
-    names: list[str]
+    labels: list[Label]
     centres: np.ndarray
+
+    @property
+    def names(self) -> list[str]:
+        return [label.name for label in self.labels]
 
 
 @pytest.fixture
@@ -237,8 +241,8 @@ def chrome(monkeypatch):
     def fake_open_bench(*, headed: bool = False):
         yield fake
 
-    def fake_write(folder, candidate, names, centres, **kwargs):
-        written.append(Written(Path(folder), candidate, list(names), np.array(centres)))
+    def fake_write(folder, candidate, labels, centres, **kwargs):
+        written.append(Written(Path(folder), candidate, list(labels), np.array(centres)))
         return bundle.Built(Path(folder), {}, ("cifarium.json", "index.html"), fake.removed,
                             first_load_bytes=51_200_000, size_bytes=52_000_000)
 
@@ -298,6 +302,20 @@ def test_run_writes_the_folder_of_the_chosen_model_with_the_centres_of_its_label
     assert "index.html is an example page and every build writes it again" in out
     assert "python -m http.server 8000 --directory " in out and "http://localhost:8000/" in out
     assert "sends no isolation headers" in out
+
+
+def test_run_hands_the_descriptions_of_the_labels_to_the_folder_and_nothing_of_the_examples(tmp_path, chrome, capsys):
+    settings = ("labels:\n  - shipping: Where the parcel is\n  - returns\n  - technical: Something is broken\n")
+
+    code = build.run(write_task(tmp_path, settings))
+
+    _, err = capsys.readouterr()
+    assert code == 0, err
+    [written] = chrome.written
+    # The folder gets the labels of the settings and the centres, which are numbers: no example.
+    assert written.labels == [Label("shipping", "Where the parcel is"), Label("returns"),
+                              Label("technical", "Something is broken")]
+    assert written.centres.dtype.kind == "f"
 
 
 def test_run_writes_to_the_output_of_the_settings_and_says_what_it_removed(tmp_path, chrome, capsys):

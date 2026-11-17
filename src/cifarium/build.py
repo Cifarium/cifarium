@@ -282,7 +282,7 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
     names = [label.name for label in items.labels]
     centres = evaluate.centroids(result.vectors, [item.expected for item in items.items], names)
     try:
-        built = bundle.write(settings.output, chosen.outcome.candidate, names, centres)
+        built = bundle.write(settings.output, chosen.outcome.candidate, items.labels, centres)
     except bundle.BundleError as error:
         print(f"\nFAILED: {error}", file=sys.stderr)
         return 1

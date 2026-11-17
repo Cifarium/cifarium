@@ -17,6 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+from publishable import example_leaks
 
 from cifarium import bundle, paths
 
@@ -95,8 +96,8 @@ def test_build_chooses_all_minilm_for_the_english_set_and_writes_its_folder(engl
     assert (manifest["format"], manifest["task"], manifest["recipe"]) == (1, "classify", "embed-centroid")
     assert manifest["model"]["repo"] == "Xenova/all-MiniLM-L6-v2"
     assert set(manifest["variants"]) == {"cpu"}
-    assert json.loads((english_build.folder / "data" / "labels.json").read_text(encoding="utf-8")) == [
-        "shipping", "returns", "technical"]
+    assert [label["name"] for label in manifest["labels"]] == ["shipping", "returns", "technical"]
+    assert not (english_build.folder / "data" / "labels.json").exists()
     assert (english_build.folder / "data" / "labels.bin").stat().st_size == 3 * 384 * 4
     total, files = bundle.first_load(manifest, "cpu")
     assert all((english_build.folder / name).stat().st_size > 0 for name in files)
@@ -105,3 +106,11 @@ def test_build_chooses_all_minilm_for_the_english_set_and_writes_its_folder(engl
                  "hosting/vercel.json", "hosting/nginx.conf"):
         assert (english_build.folder / name).is_file(), name
     assert not paths.profile_dir().exists()
+
+
+@pytest.mark.e2e
+def test_the_folder_of_a_real_build_holds_no_text_of_the_examples(english_build):
+    # ARCHITECTURE.md, sections 7 and 14: everything in the folder may be published.
+    assert english_build.code == 0, english_build.err
+
+    assert example_leaks(english_build.folder, [text for text, _ in ENGLISH]) == []

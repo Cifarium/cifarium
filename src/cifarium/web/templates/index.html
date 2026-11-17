@@ -49,6 +49,7 @@
   :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
   progress { width: 100%; margin-top: .75rem; }
   #result { min-height: 1.5em; margin: 1rem 0 0; font-size: 1.25rem; font-weight: 600; }
+  #scores { margin: .25rem 0 0; color: var(--muted); }
   #error { margin: 1rem 0 0; color: var(--bad); }
   #about { margin: 0; color: var(--muted); }
   details { margin-top: 2rem; color: var(--muted); }
@@ -68,6 +69,7 @@
   </form>
 
   <p id="result" aria-live="polite"></p>
+  <p id="scores"></p>
   <p id="error" role="alert" hidden></p>
 
   <details>
@@ -90,8 +92,12 @@ function setState(state) {
   document.body.dataset.state = state;
 }
 
+// Every error of the runtime has a `code`; a program decides by it, a person reads the message.
 function showError(error) {
-  failure.textContent = error?.code ? `${error.code}: ${error.message}` : String(error?.message ?? error);
+  const text = error?.code ? `${error.code}: ${error.message}` : String(error?.message ?? error);
+  failure.textContent = error?.code === 'network'
+    ? `${text} Check the connection and click the button again.`
+    : text;
   failure.hidden = false;
 }
 
@@ -102,11 +108,14 @@ function megabytes(bytes) {
 function describe(info) {
   const lines = [
     `model         ${info.model} (${info.license})`,
-    `labels        ${info.labels.join(', ')}`,
+    `labels        ${info.labels.map((label) => label.name).join(', ')}`,
     `device        ${info.device}, ${info.threads} thread${info.threads === 1 ? '' : 's'}`,
     `first visit   ${megabytes(info.bytes)}`,
     `built by      cifarium ${info.cifarium}, runtime ${info.runtime}`,
   ];
+  if (info.fallback) {
+    lines.push(`graphics card not used: ${info.fallback.message}`);
+  }
   if (!info.crossOriginIsolated) {
     lines.push('', 'The page is not cross-origin isolated, so the model computes in one thread.',
       'The settings in hosting/ add the headers that fix it.');
@@ -123,7 +132,18 @@ async function load() {
   go.disabled = true;
   bar.hidden = false;
   try {
-    const info = await model.load({ onProgress: (progress) => { bar.value = progress.percent; } });
+    const info = await model.load({
+      onProgress: (progress) => {
+        // "download": bytes are coming. "prepare": all are in, the model is being started.
+        if (progress.phase === 'prepare') {
+          bar.removeAttribute('value');
+          go.textContent = 'Starting the model';
+        } else {
+          bar.value = progress.percent;
+          go.textContent = `Downloading ${Math.floor(progress.percent)}%`;
+        }
+      },
+    });
     document.getElementById('info').textContent = describe(info);
     go.textContent = 'Name the label';
     setState('ready');
@@ -131,8 +151,10 @@ async function load() {
   } catch (error) {
     showError(error);
     setState('failed');
+    go.textContent = 'Load the model';
   } finally {
     bar.hidden = true;
+    bar.value = 0;
     syncButton();
   }
 }
@@ -140,9 +162,12 @@ async function load() {
 async function classify() {
   go.disabled = true;
   try {
-    const { label, score } = await model.run(text.value);
+    // `scores` has every label, the best first: `label` and `score` are its first entry.
+    const { label, score, scores } = await model.run(text.value);
     result.textContent = `${label} (${score.toFixed(2)})`;
     result.dataset.label = label;
+    document.getElementById('scores').textContent =
+      scores.map((item) => `${item.label} ${item.score.toFixed(2)}`).join(' · ');
     failure.hidden = true;
   } catch (error) {
     showError(error);

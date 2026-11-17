@@ -23,9 +23,11 @@ import cifarium
 
 from . import catalog, hub, paths, vendor
 from .bench import external_data_files, graph_name
+from .config import Label
 
 FORMAT = 1
-"""Manifest format. The runtime reads only this one (``MANIFEST_FORMAT`` in cifarium.js)."""
+"""Manifest format. The runtime reads this one and every older one (``MANIFEST_FORMAT`` in
+cifarium.js); ARCHITECTURE.md, section 14, says what changes the number."""
 
 MANIFEST = "cifarium.json"
 RUNTIME_FILES = ("cifarium.js", "cifarium-worker.js")
@@ -37,7 +39,6 @@ ENGINE_FILES = {
     "loader": vendor.WASM_LOADER_FILE,
     "executor": vendor.WASM_BINARY_FILE,
 }
-LABELS_FILE = "data/labels.json"
 CENTRES_FILE = "data/labels.bin"
 
 TEMPLATES = "templates"
@@ -65,7 +66,7 @@ class Built:
 def write(
     folder: Path,
     candidate: catalog.Candidate,
-    names: Sequence[str],
+    labels: Sequence[Label],
     centres: np.ndarray,
     *,
     variants: Sequence[str] = ("cpu",),
@@ -75,18 +76,22 @@ def write(
 ) -> Built:
     """Write the build of ``candidate`` into ``folder`` and return what is there now.
 
-    ``names`` are the labels in the order of the settings and ``centres`` has one row for each,
-    the way :func:`evaluate.centroids` gives them. ``variants`` are the variants of the entry that
-    the bench has checked. The engine and the model are copied from the cache (``engine_dir`` and
-    ``model_dir`` replace it); a file whose size is not the one the catalog or the pinned engine
-    names is an error, because the manifest promises these sizes to the runtime.
+    ``labels`` are the labels of the settings, name and description, in their order, and
+    ``centres`` has one row for each, the way :func:`evaluate.centroids` gives them. They go into
+    the manifest; nothing of the examples does, and everything in the folder may be published
+    (ARCHITECTURE.md, section 7). ``variants`` are the variants of the entry that the bench has
+    checked. The engine and the model are copied from the cache (``engine_dir`` and ``model_dir``
+    replace it); a file whose size is not the one the catalog or the pinned engine names is an
+    error, because the manifest promises these sizes to the runtime.
 
-    The manifest is written after everything it names, so a page that reads it while the build
+    The same input gives the same bytes in every file, with no time or path in them. The
+    manifest is written after everything it names, so a page that reads it while the build
     runs sees the old build or the new one. Files of the previous build that the new one does
     not name are deleted at the end; see :func:`stale`.
     """
     entry, recipe = candidate.entry, candidate.recipe
-    names = list(names)
+    labels = list(labels)
+    names = [label.name for label in labels]
     rows = _centres(names, centres)
     if recipe.kind != "embed-centroid":
         raise BundleError(f"{entry.id}: the folder of the recipe {recipe.kind} is not written yet")
@@ -107,7 +112,7 @@ def write(
         engine_path = f"vendor/transformers-{vendor.TRANSFORMERS_VERSION}/"
         engine: dict[str, Any] = {
             "transformers": vendor.TRANSFORMERS_VERSION,
-            "onnxruntime_web": vendor.ORT_WEB_VERSION,
+            "onnxruntimeWeb": vendor.ORT_WEB_VERSION,
         }
         for role, name in ENGINE_FILES.items():
             _copy(engine_dir / name, folder / engine_path / name, engine_sizes[name])
@@ -118,8 +123,6 @@ def write(
             for name, size in entry.files(variant).items():
                 _copy(model_dir / name, folder / model_path / entry.repo / name, size)
 
-        labels = json.dumps(names, ensure_ascii=False).encode("utf-8")
-        _write_bytes(folder / LABELS_FILE, labels)
         _write_bytes(folder / CENTRES_FILE, rows.tobytes())
 
         manifest = {
@@ -127,13 +130,14 @@ def write(
             "cifarium": cifarium.__version__,
             "task": candidate.recipe.task,
             "recipe": recipe.kind,
+            "labels": [{"name": label.name, "description": label.description} for label in labels],
             "model": {"repo": entry.repo, "revision": entry.revision, "license": entry.license,
                       "path": model_path},
             "variants": {variant: variant_record(entry, variant) for variant in variants},
             "params": {"pooling": recipe.params["pooling"], "prefix": recipe.params["prefix"]},
             "engine": engine,
+            # The files of `data` depend on the recipe; embed-centroid has the centres only.
             "data": {
-                "labels": {"path": LABELS_FILE, "bytes": len(labels)},
                 "centres": {"path": CENTRES_FILE, "bytes": rows.nbytes},
             },
         }
@@ -207,7 +211,7 @@ def licenses_text(manifest: Mapping[str, Any], entry: catalog.Entry) -> bytes:
     text = template.substitute(
         cifarium=manifest["cifarium"],
         transformers=manifest["engine"]["transformers"],
-        onnxruntime_web=manifest["engine"]["onnxruntime_web"],
+        onnxruntime_web=manifest["engine"]["onnxruntimeWeb"],
         engine_path=PurePosixPath(manifest["engine"]["library"]["path"]).parent.as_posix(),
         repo=entry.repo,
         revision=entry.revision,

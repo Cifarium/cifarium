@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import hosting_rules
 import pytest
@@ -70,6 +71,7 @@ def use_page(bench: Bench, url: str, text: str = TEXT) -> dict[str, Any]:
         return {
             "label": page.get_attribute("#result", "data-label"),
             "shown": page.inner_text("#result"),
+            "scores": page.inner_text("#scores"),
             "info": page.text_content("#info"),
             "isolated": page.evaluate("crossOriginIsolated"),
             "error_hidden": page.is_hidden("#error"),
@@ -92,6 +94,12 @@ def expected_threads(bench: Bench) -> int:
 def check_page(shown: dict[str, Any], folder: Path) -> None:
     assert shown["label"] == LABEL
     assert re.fullmatch(rf"{LABEL} \(\d\.\d\d\)", shown["shown"]), shown["shown"]
+    # The page reads `scores` of the answer: every label, the best first.
+    listed = re.findall(r"(\w+) (-?\d\.\d\d)", shown["scores"])
+    values = [float(value) for _, value in listed]
+    assert sorted(name for name, _ in listed) == ["returns", "shipping", "technical"]
+    assert listed[0][0] == LABEL and values == sorted(values, reverse=True)
+    assert listed[0][1] == shown["shown"].split("(")[1].rstrip(")")
     assert shown["error_hidden"]
     manifest = json.loads((folder / "cifarium.json").read_text(encoding="utf-8"))
     info = shown["info"]
@@ -125,6 +133,40 @@ def test_without_headers_the_page_still_works_in_one_thread_and_says_why(bench, 
     assert shown["isolated"] is False
     assert threads_of(shown["info"]) == 1
     assert "The page is not cross-origin isolated, so the model computes in one thread." in shown["info"]
+
+
+def test_the_page_and_its_thread_ask_only_for_files_of_the_folder(bench, folder):
+    # Section 14: nothing is sent anywhere. Every request of the page and of the thread it starts
+    # (the browser reports both) goes to the server the folder is on, is a GET, and asks for a
+    # file of the folder; the one thing besides is the icon the browser asks every page for.
+    seen: list[tuple[str, str]] = []
+
+    def note(request) -> None:
+        # The antivirus of the author's laptop (Kaspersky) writes a script of its own into every
+        # page served over plain http, and the browser reports that script's requests. They are
+        # not the page's and not the thread's, and there are none on GitHub Actions.
+        if not urlsplit(request.url).hostname.endswith(".kaspersky-labs.com"):
+            seen.append((request.method, request.url))
+
+    text = (folder / "hosting" / "_headers").read_text(encoding="utf-8")
+    bench.context.on("request", note)
+    try:
+        with hosting_rules.RuleServer(folder, lambda path: hosting_rules.netlify(text, path)) as server:
+            use_page(bench, server.url + "/")
+            origin = server.url
+    finally:
+        bench.context.remove_listener("request", note)
+
+    asked = {url.removeprefix(origin) for _, url in seen}
+    assert all(url.startswith(origin + "/") for _, url in seen), [url for _, url in seen if not url.startswith(origin)]
+    assert {method for method, _ in seen} == {"GET"}
+    strangers = sorted(path for path in asked if path not in ("/", "/favicon.ico")
+                       and not (folder / path.split("?")[0].lstrip("/")).is_file())
+    assert strangers == []
+    # The thread's requests are among them: the checks above would pass for a page that never loaded.
+    manifest = json.loads((folder / "cifarium.json").read_text(encoding="utf-8"))
+    wanted = {"/" + name for name in bundle.first_load(manifest, "cpu")[1]}
+    assert wanted <= asked, sorted(wanted - asked)
 
 
 def free_port() -> int:

@@ -4,14 +4,16 @@
  * it, so answers come in the order the page asked (ARCHITECTURE.md, sections 1.5, 1.7 and 8).
  *
  * Replies: {id, type: "progress", progress}, {id, type: "done", value},
- * {id, type: "fail", error: {code, message}}, or, to a load whose graphics card failed,
+ * {id, type: "fail", error: {code, message, cause}}, or, to a load whose graphics card failed,
  * {id, type: "retry", fallback, carry}: the page ends this thread and loads on the processor
- * in a new one.
+ * in a new one. `cause` is the original error as plain fields: {name, message, stack}.
  */
 
 /** @typedef {import('./cifarium.js').Manifest} Manifest */
 /** @typedef {import('./cifarium.js').Variant} Variant */
 /** @typedef {import('./cifarium.js').Progress} Progress */
+/** @typedef {import('./cifarium.js').Fallback} Fallback */
+/** @typedef {import('./cifarium.js').Result} Result */
 
 /** Weights that need the adapter's shader-f16. The library checks it only for fp16. */
 const HALF_PRECISION = new Set(['fp16', 'q4f16']);
@@ -24,11 +26,12 @@ const TRIAL_TEXT = 'cifarium';
 
 class Failure extends Error {
   /**
-   * @param {string} code
+   * @param {string} code One of ERROR_CODES in cifarium.js.
    * @param {string} message
+   * @param {unknown} [cause] The error that led to this one.
    */
-  constructor(code, message) {
-    super(message);
+  constructor(code, message, cause) {
+    super(message, cause === undefined ? undefined : { cause });
     this.code = code;
   }
 }
@@ -40,11 +43,11 @@ class Failure extends Error {
  */
 class Retry extends Error {
   /**
-   * @param {string} fallback Why the card's variant is not in use.
+   * @param {Fallback} fallback Why the card's variant is not in use.
    * @param {[string, {loaded: number, total: number}][]} carry The bytes counted so far.
    */
   constructor(fallback, carry) {
-    super(fallback);
+    super(fallback.message);
     this.fallback = fallback;
     this.carry = carry;
   }
@@ -86,8 +89,13 @@ async function handle(request) {
       self.postMessage({ id: request.id, type: 'retry', fallback: error.fallback, carry: error.carry });
       return;
     }
-    const code = error instanceof Failure ? error.code : request.type === 'load' ? 'load' : 'run';
-    self.postMessage({ id: request.id, type: 'fail', error: { code, message: describe(error) } });
+    const known = error instanceof Failure;
+    const code = known ? error.code : request.type === 'load' ? 'load' : 'run';
+    self.postMessage({
+      id: request.id,
+      type: 'fail',
+      error: { code, message: describe(error), cause: plain(known ? error.cause : error) },
+    });
   }
 }
 
@@ -103,6 +111,8 @@ class Tally {
     this.id = id;
     /** @type {Map<string, {loaded: number, total: number}>} */
     this.files = new Map(carry);
+    /** Whether the "prepare" event of this thread has been sent. */
+    this.preparing = false;
   }
 
   /**
@@ -161,6 +171,8 @@ class Tally {
   }
 
   /**
+   * One "download" event for the step; the one that brings the last byte is followed by the
+   * "prepare" event, once per thread.
    * @param {string} file
    * @param {{loaded: number, total: number}} entry
    */
@@ -171,17 +183,58 @@ class Tally {
       allLoaded += item.loaded;
       allTotal += item.total;
     }
-    /** @type {Progress} */
-    const progress = {
-      file,
-      loaded: entry.loaded,
-      total: entry.total,
-      allLoaded,
-      allTotal,
-      percent: allTotal > 0 ? (allLoaded / allTotal) * 100 : 100,
+    const post = (/** @type {Progress["phase"]} */ phase) => {
+      /** @type {Progress} */
+      const progress = {
+        phase,
+        file,
+        loaded: entry.loaded,
+        total: entry.total,
+        allLoaded,
+        allTotal,
+        percent: allTotal > 0 ? (allLoaded / allTotal) * 100 : 100,
+      };
+      self.postMessage({ id: this.id, type: 'progress', progress });
     };
-    self.postMessage({ id: this.id, type: 'progress', progress });
+    post('download');
+    if (!this.preparing && allTotal > 0 && allLoaded === allTotal) {
+      this.preparing = true;
+      post('prepare');
+    }
   }
+}
+
+/**
+ * Watches the downloads the library makes, so a failed model can be told apart: a download that
+ * did not happen (the "network" code) from a model that did not start (the "load" code). The
+ * library hides a failed `fetch` behind its own error, so the runtime sees only what passes
+ * through `fetch`: a rejection, or an answer that is worth another try.
+ * @param {any} env The library's settings.
+ * @returns {{problem: Error|null}} `problem` is the last such failure since it was cleared.
+ */
+function watchFetch(env) {
+  const watch = { problem: /** @type {Error|null} */ (null) };
+  const wrap = (/** @type {Function} */ real) => async (/** @type {any[]} */ ...args) => {
+    let response;
+    try {
+      response = await real(...args);
+    } catch (error) {
+      watch.problem = error instanceof Error ? error : new Error(String(error));
+      throw error;
+    }
+    if (retryable(response.status)) {
+      watch.problem = new Error(`HTTP ${response.status} for ${response.url}`);
+    }
+    return response;
+  };
+  // The library takes model files through env.fetch; ONNX Runtime takes the data files of a
+  // big graph through the thread's own fetch.
+  if (typeof env.fetch === 'function') {
+    env.fetch = wrap(env.fetch);
+  }
+  const own = self.fetch.bind(self);
+  self.fetch = wrap(own);
+  return watch;
 }
 
 /**
@@ -189,7 +242,7 @@ class Tally {
  * variant fails and the processor's remains, answers with a Retry: the page then starts a new
  * thread with `retry` set, which tries only the processor and goes on with the same count.
  * @param {{id: number, manifestUrl: string, manifest: Manifest, device: "auto"|"wasm"|"webgpu",
- *   retry?: {fallback: string, carry: [string, {loaded: number, total: number}][]}}} request
+ *   retry?: {fallback: Fallback, carry: [string, {loaded: number, total: number}][]}}} request
  */
 async function load({ id, manifestUrl, manifest, device, retry }) {
   if (model) {
@@ -199,20 +252,33 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
   const { engine, data } = manifest;
   const tally = new Tally(id, retry?.carry);
   const modelFolder = `${manifest.model.path}${manifest.model.repo}/`;
-  for (const file of [engine.library, engine.loader, engine.executor, data.labels, data.centres]) {
+
+  // The variant is chosen first, so that every file of this load is counted before the first
+  // byte arrives: the "prepare" phase starts when the count is complete, and a count that
+  // learned of the model's files late would be complete too soon.
+  const { order, fallback } = retry && manifest.variants.cpu
+    ? { order: [{ name: /** @type {"cpu"} */ ('cpu'), variant: manifest.variants.cpu }], fallback: retry.fallback }
+    : await plan(manifest.variants, device);
+  if (order.length === 0) {
+    throw new Failure('load', `The model did not start: no variant could be tried${fallback ? `; ${fallback.message}` : ''}.`);
+  }
+  for (const file of [engine.library, engine.loader, engine.executor, data.centres]) {
     tally.expect(file.path, file.bytes);
   }
-
-  let library;
-  try {
-    library = await import(address(engine.library.path));
-  } catch (error) {
-    throw new Failure('load', `Could not load Transformers.js from ${address(engine.library.path)}: ${describe(error)}`);
+  for (const [file, bytes] of Object.entries(order[0].variant.files)) {
+    tally.expect(modelFolder + file, bytes);
   }
+
+  const library = await importModule(address(engine.library.path), 'Transformers.js');
   tally.finish(engine.library.path);
+  // ONNX Runtime imports the loader itself when it makes the first session; importing it here
+  // counts its bytes with the others and lets a failure be named now. A module that was
+  // imported once is not fetched again.
+  await importModule(address(engine.loader.path), 'the ONNX Runtime loader');
+  tally.finish(engine.loader.path);
   const { env, pipeline } = library;
 
-  const { labels, centres, dims } = await readData(data, address, tally);
+  const { labels, centres, dims } = await readCentres(manifest, address, tally);
 
   // Every file comes from this build: nothing from Hugging Face or a CDN. The models' folder
   // must be a path, not a full address: the library checks that a local file exists (it decides
@@ -229,18 +295,14 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
   // library leaves the executor alone and ONNX Runtime takes the buffer.
   env.backends.onnx.wasm.wasmBinary = await readExecutor(address(engine.executor.path), engine.executor.path, tally, env.cacheKey);
   env.backends.onnx.wasm.wasmPaths = { mjs: address(engine.loader.path) };
+  const watch = watchFetch(env);
 
-  const { order, fallback } = retry && manifest.variants.cpu
-    ? { order: [{ name: /** @type {"cpu"} */ ('cpu'), variant: manifest.variants.cpu }], fallback: retry.fallback }
-    : await plan(manifest.variants, device);
-  if (order.length === 0) {
-    throw new Failure('load', `The model did not start: no variant could be tried${fallback ? `; ${fallback}` : ''}.`);
-  }
   for (const [index, { name, variant }] of order.entries()) {
     for (const [file, bytes] of Object.entries(variant.files)) {
       tally.expect(modelFolder + file, bytes);
     }
     let extractor = null;
+    watch.problem = null;
     try {
       extractor = await pipeline('feature-extraction', manifest.model.repo, {
         device: variant.device,
@@ -265,29 +327,35 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
         throw new Failure('load', `The model gives vectors of ${trial.length} numbers, the centres have ${dims}.`);
       }
     } catch (error) {
-      // Any failure of the card's variant, the trial run included, hands over to the processor.
+      // A file that did not download is not a reason to try another variant: the next one
+      // needs files from the same place. Say so and let the page try the whole load again.
+      const missing = error instanceof Failure ? null : watch.problem ?? (isTransportError(error) ? error : null);
+      if (missing) {
+        throw new Failure('network', `A file of the model did not download: ${describe(missing)}`, missing);
+      }
+      // Any other failure of the card's variant, the trial run included, hands over to the processor.
       const next = order[index + 1]?.variant.files;
       if (!next) {
-        const before = fallback && name === 'cpu' ? `; before that, ${fallback}` : '';
-        throw new Failure('load', `The model did not start: ${name} (${variant.device}, ${variant.dtype}): ${describe(error)}${before}.`);
+        const before = fallback && name === 'cpu' ? `; before that, ${fallback.message}` : '';
+        throw new Failure('load', `The model did not start: ${name} (${variant.device}, ${variant.dtype}): ${describe(error)}${before}.`, error);
       }
       for (const file of Object.keys(variant.files)) {
         if (!(file in next)) {
           tally.drop(modelFolder + file);
         }
       }
-      const reason = `the graphics card failed: ${describe(error)}`;
-      console.warn(`cifarium: ${reason}; trying the processor in a new thread.`);
-      throw new Retry(reason, [...tally.files]);
+      /** @type {Fallback} */
+      const failed = { reason: 'failed', message: `the graphics card failed: ${describe(error)}` };
+      console.warn(`cifarium: ${failed.message}; trying the processor in a new thread.`);
+      throw new Retry(failed, [...tally.files]);
     }
 
     model = { extractor, labels, centres, dims, pooling: manifest.params.pooling, prefix: manifest.params.prefix };
     tally.finishAll();
-    const bytes = [engine.library, engine.loader, engine.executor, data.labels, data.centres]
+    const bytes = [engine.library, engine.loader, engine.executor, data.centres]
       .reduce((sum, file) => sum + file.bytes, 0)
       + Object.values(variant.files).reduce((sum, size) => sum + size, 0);
     return {
-      labels,
       variant: name,
       device: variant.device,
       dtype: variant.dtype,
@@ -304,15 +372,16 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
  * Which variants to try, in order, and why the graphics card's one is left out.
  * @param {{cpu?: Variant, gpu?: Variant}} variants
  * @param {"auto"|"wasm"|"webgpu"} device
- * @returns {Promise<{order: {name: "cpu"|"gpu", variant: Variant}[], fallback: string|null}>}
+ * @returns {Promise<{order: {name: "cpu"|"gpu", variant: Variant}[], fallback: Fallback|null}>}
  */
 async function plan(variants, device) {
   /** @type {{name: "cpu"|"gpu", variant: Variant}[]} */
   const order = [];
+  /** @type {Fallback|null} */
   let fallback = null;
   if (variants.gpu) {
     if (device === 'wasm') {
-      fallback = 'the page asked for the processor';
+      fallback = { reason: 'requested', message: 'the page asked for the processor' };
     } else {
       const problem = device === 'webgpu' ? null : await gpuProblem(variants.gpu.dtype);
       if (problem) {
@@ -331,57 +400,46 @@ async function plan(variants, device) {
 /**
  * Why the graphics card cannot take weights of this dtype, or null if it can.
  * @param {string} dtype
- * @returns {Promise<string|null>}
+ * @returns {Promise<Fallback|null>}
  */
 async function gpuProblem(dtype) {
   const gpu = /** @type {any} */ (navigator).gpu;
   if (!gpu) {
-    return 'this browser has no WebGPU here';
+    return { reason: 'no-webgpu', message: 'this browser has no WebGPU here' };
   }
   let adapter;
   try {
     // The preference the library itself passes to ONNX Runtime.
     adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
   } catch (error) {
-    return `requestAdapter() failed: ${describe(error)}`;
+    return { reason: 'no-adapter', message: `requestAdapter() failed: ${describe(error)}` };
   }
   if (!adapter) {
-    return 'the browser gave no WebGPU adapter';
+    return { reason: 'no-adapter', message: 'the browser gave no WebGPU adapter' };
   }
   if (adapter.info?.isFallbackAdapter ?? adapter.isFallbackAdapter) {
-    return 'the WebGPU adapter is a software one';
+    return { reason: 'software-adapter', message: 'the WebGPU adapter is a software one' };
   }
   if (HALF_PRECISION.has(dtype) && !adapter.features.has('shader-f16')) {
-    return `the adapter has no shader-f16, which ${dtype} weights need`;
+    return { reason: 'no-shader-f16', message: `the adapter has no shader-f16, which ${dtype} weights need` };
   }
   return null;
 }
 
 /**
- * Reads the label names and their centres.
- * @param {Manifest["data"]} data
+ * Reads the centres of the labels; the names come from the manifest.
+ * @param {Manifest} manifest
  * @param {(path: string) => string} address
  * @param {Tally} tally
  */
-async function readData(data, address, tally) {
-  const labelsText = await fetchFile(address(data.labels.path));
-  tally.finish(data.labels.path);
-  let labels;
-  try {
-    labels = JSON.parse(new TextDecoder().decode(labelsText));
-  } catch {
-    throw new Failure('load', `${data.labels.path} is not JSON.`);
-  }
-  if (!Array.isArray(labels) || labels.length < 2 || !labels.every((label) => typeof label === 'string' && label)
-    || new Set(labels).size !== labels.length) {
-    throw new Failure('load', `${data.labels.path} must be a list of at least two different label names.`);
-  }
-
-  const bytes = await fetchFile(address(data.centres.path));
-  tally.finish(data.centres.path);
+async function readCentres(manifest, address, tally) {
+  const labels = manifest.labels.map((label) => label.name);
+  const file = manifest.data.centres;
+  const bytes = await fetchFile(address(file.path));
+  tally.finish(file.path);
   const dims = bytes.byteLength / 4 / labels.length;
   if (!Number.isInteger(dims) || dims < 1) {
-    throw new Failure('load', `${data.centres.path} has ${bytes.byteLength} bytes, which is not ${labels.length} rows of float32.`);
+    throw new Failure('load', `${file.path} has ${bytes.byteLength} bytes, which is not ${labels.length} rows of float32.`);
   }
   const view = new DataView(bytes);
   const centres = new Float32Array(labels.length * dims);
@@ -394,10 +452,32 @@ async function readData(data, address, tally) {
       sum += centres[row * dims + column] ** 2;
     }
     if (!(Math.abs(Math.sqrt(sum) - 1) <= UNIT_TOLERANCE)) {
-      throw new Failure('load', `The centre of ${JSON.stringify(labels[row])} in ${data.centres.path} has length ${Math.sqrt(sum)}, not 1.`);
+      throw new Failure('load', `The centre of ${JSON.stringify(labels[row])} in ${file.path} has length ${Math.sqrt(sum)}, not 1.`);
     }
   }
   return { labels, centres, dims };
+}
+
+/**
+ * Imports a module of the build. A failed import says only that the module could not be
+ * fetched, whatever the cause, so a second request tells a connection that broke (worth another
+ * try, "network") from a file that is missing or wrong ("load").
+ * @param {string} href
+ * @param {string} what
+ */
+async function importModule(href, what) {
+  try {
+    return await import(href);
+  } catch (error) {
+    let again;
+    try {
+      again = await self.fetch(href, { method: 'HEAD' });
+    } catch {
+      throw new Failure('network', `Could not download ${what} from ${href}: ${describe(error)}`, error);
+    }
+    const code = retryable(again.status) ? 'network' : 'load';
+    throw new Failure(code, `Could not load ${what} from ${href}: ${describe(error)}`, error);
+  }
 }
 
 /**
@@ -434,7 +514,9 @@ async function readExecutor(href, file, tally, cacheName) {
 }
 
 /**
- * Downloads a whole file, reporting the bytes read so far.
+ * Downloads a whole file, reporting the bytes read so far. A request that fails, a transfer
+ * that breaks off and an answer of 408, 425, 429 or 5xx are "network"; any other HTTP error is
+ * "load": the server says the file is not there or not for us, and asking again changes nothing.
  * @param {string} href
  * @param {(loaded: number) => void} [onBytes]
  * @returns {Promise<ArrayBuffer>}
@@ -444,68 +526,72 @@ async function fetchFile(href, onBytes) {
   try {
     response = await fetch(href);
   } catch (error) {
-    throw new Failure('load', `Could not download ${href}: ${describe(error)}`);
+    throw new Failure('network', `Could not download ${href}: ${describe(error)}`, error);
   }
   if (!response.ok) {
-    throw new Failure('load', `Could not download ${href}: HTTP ${response.status}.`);
+    throw new Failure(retryable(response.status) ? 'network' : 'load', `Could not download ${href}: HTTP ${response.status}.`);
   }
-  if (!onBytes || !response.body) {
-    return response.arrayBuffer();
-  }
-  const reader = response.body.getReader();
-  /** @type {Uint8Array[]} */
-  const chunks = [];
-  let loaded = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
+  try {
+    if (!onBytes || !response.body) {
+      return await response.arrayBuffer();
     }
-    chunks.push(value);
-    loaded += value.byteLength;
-    onBytes(loaded);
+    const reader = response.body.getReader();
+    /** @type {Uint8Array[]} */
+    const chunks = [];
+    let loaded = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      chunks.push(value);
+      loaded += value.byteLength;
+      onBytes(loaded);
+    }
+    const whole = new Uint8Array(loaded);
+    let offset = 0;
+    for (const chunk of chunks) {
+      whole.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return whole.buffer;
+  } catch (error) {
+    throw new Failure('network', `The download of ${href} broke off: ${describe(error)}`, error);
   }
-  const whole = new Uint8Array(loaded);
-  let offset = 0;
-  for (const chunk of chunks) {
-    whole.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return whole.buffer;
 }
 
 /**
+ * Scores every label and names the best.
  * @param {string} text
- * @returns {Promise<{label: string, score: number}>}
+ * @returns {Promise<Result>}
  */
 async function run(text) {
   if (!model) {
     throw new Failure('not-loaded', 'The model is not loaded.');
+  }
+  if (typeof text !== 'string' || text.trim() === '') {
+    throw new Failure('input', 'run() needs a text with something in it.');
   }
   const vector = await toVector(model.extractor, model.prefix + text, model.pooling);
   scaleToUnit(vector);
   if (vector.length !== model.dims) {
     throw new Failure('run', `The model gave a vector of ${vector.length} numbers, the centres have ${model.dims}.`);
   }
-  // Labels in their order; the best changes only on a strictly larger score, so a tie goes
-  // to the label listed first, as in evaluate.predict.
-  let best = -1;
-  let bestScore = -Infinity;
-  for (let row = 0; row < model.labels.length; row += 1) {
+  const scores = model.labels.map((label, row) => {
     let score = 0;
     const start = row * model.dims;
     for (let column = 0; column < model.dims; column += 1) {
       score += vector[column] * model.centres[start + column];
     }
-    if (score > bestScore) {
-      best = row;
-      bestScore = score;
-    }
-  }
-  if (best < 0) {
+    return { label, score };
+  });
+  // Sorting is stable: labels with the same score stay in the order of the settings, so the
+  // best is the label listed first among equals, as in evaluate.predict.
+  scores.sort((a, b) => b.score - a.score);
+  if (scores.length === 0) {
     throw new Failure('run', 'No label got a score.');
   }
-  return { label: model.labels[best], score: bestScore };
+  return { label: scores[0].label, score: scores[0].score, scores };
 }
 
 /**
@@ -550,6 +636,39 @@ function scaleToUnit(vector) {
   for (let index = 0; index < vector.length; index += 1) {
     vector[index] /= norm;
   }
+}
+
+/**
+ * Whether a new try may help when the server answered with this status.
+ * @param {number} status
+ */
+function retryable(status) {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+/**
+ * The error `fetch` throws when the request or the transfer fails, in the words of Chrome
+ * ("Failed to fetch", "network error"), Firefox ("NetworkError when attempting to fetch
+ * resource") and Safari ("Load failed").
+ * @param {unknown} error
+ */
+function isTransportError(error) {
+  return error instanceof TypeError && /fetch|network|load failed/i.test(error.message);
+}
+
+/**
+ * An error as plain fields, which cross to the page without loss.
+ * @param {unknown} error
+ * @returns {{name: string, message: string, stack?: string}|undefined}
+ */
+function plain(error) {
+  if (error === undefined) {
+    return undefined;
+  }
+  if (error instanceof Error) {
+    return { name: error.name, message: error.message, stack: error.stack };
+  }
+  return { name: 'Error', message: String(error) };
 }
 
 /** @param {unknown} error */
