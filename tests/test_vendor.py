@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import re
 import tarfile
 
 import pytest
@@ -26,8 +27,13 @@ def integrity_of(data: bytes) -> str:
     return "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode("ascii")
 
 
-def package_for(tarball: bytes, *, name: str = "demo", files: tuple[str, ...] = ("lib.js",)):
-    return vendor.NpmPackage(name=name, version="1.0.0", integrity=integrity_of(tarball), files=files)
+def package_for(tarball: bytes, *, name: str = "demo", files: tuple[str, ...] = ("lib.js",), license=None):
+    return vendor.NpmPackage(name=name, version="1.0.0", integrity=integrity_of(tarball), files=files,
+                             license=license)
+
+
+def sha256_of(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 class FakeRegistry:
@@ -151,6 +157,120 @@ def test_ensure_engine_downloads_once(tmp_path):
 
     assert vendor.ensure_engine(tmp_path, packages=packages, open_url=registry) == folder
     assert len(registry.calls) == 2
+
+
+TEXT = b"Apache License\nVersion 2.0, January 2004\n"
+
+
+def test_fetch_stores_the_license_text_that_the_tarball_carries(tmp_path):
+    tarball = make_tarball({"package/dist/lib.js": b"x", "package/LICENSE": TEXT, "package/README.md": b"r"})
+    package = package_for(tarball, license=vendor.PackageLicense("LICENSE-demo.txt", sha256_of(TEXT)))
+
+    vendor.fetch_package(package, tmp_path, open_url=FakeRegistry({package.tarball_url: tarball}))
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["LICENSE-demo.txt", "lib.js"]
+    assert (tmp_path / "LICENSE-demo.txt").read_bytes() == TEXT
+
+
+def test_fetch_takes_the_license_text_from_the_address_when_the_tarball_has_none(tmp_path):
+    tarball = make_tarball({"package/dist/lib.js": b"x"})
+    mit = b"MIT License\n"
+    license = vendor.PackageLicense("LICENSE-demo.txt", sha256_of(mit), member=None,
+                                    url="https://raw.example/demo/LICENSE")
+    package = package_for(tarball, license=license)
+    registry = FakeRegistry({package.tarball_url: tarball, license.url: mit})
+
+    vendor.fetch_package(package, tmp_path, open_url=registry)
+
+    assert (tmp_path / "LICENSE-demo.txt").read_bytes() == mit
+    assert registry.calls == [package.tarball_url, license.url]
+
+
+def test_a_license_text_that_is_not_the_pinned_one_is_refused(tmp_path):
+    tarball = make_tarball({"package/dist/lib.js": b"x", "package/LICENSE": b"changed text"})
+    package = package_for(tarball, license=vendor.PackageLicense("LICENSE-demo.txt", sha256_of(TEXT)))
+
+    with pytest.raises(vendor.VendorError, match="Checksum mismatch for the license of demo"):
+        vendor.fetch_package(package, tmp_path, open_url=FakeRegistry({package.tarball_url: tarball}))
+
+
+def test_a_license_text_fetched_from_the_address_is_checked_too(tmp_path):
+    tarball = make_tarball({"package/dist/lib.js": b"x"})
+    license = vendor.PackageLicense("LICENSE-demo.txt", sha256_of(b"MIT License\n"), member=None,
+                                    url="https://raw.example/demo/LICENSE")
+    package = package_for(tarball, license=license)
+    registry = FakeRegistry({package.tarball_url: tarball, license.url: b"something else"})
+
+    with pytest.raises(vendor.VendorError, match="Checksum mismatch for the license of demo"):
+        vendor.fetch_package(package, tmp_path, open_url=registry)
+
+
+def test_a_tarball_without_the_license_member_is_an_error_that_names_it(tmp_path):
+    tarball = make_tarball({"package/dist/lib.js": b"x"})
+    package = package_for(tarball, license=vendor.PackageLicense("LICENSE-demo.txt", sha256_of(TEXT)))
+
+    with pytest.raises(vendor.VendorError, match="demo 1.0.0 has no package/LICENSE"):
+        vendor.fetch_package(package, tmp_path, open_url=FakeRegistry({package.tarball_url: tarball}))
+
+
+def test_an_address_that_cannot_be_reached_is_a_vendor_error(tmp_path):
+    tarball = make_tarball({"package/dist/lib.js": b"x"})
+    license = vendor.PackageLicense("LICENSE-demo.txt", sha256_of(TEXT), member=None,
+                                    url="https://raw.example/demo/LICENSE")
+    package = package_for(tarball, license=license)
+
+    def only_the_registry(url: str):
+        if url == license.url:
+            raise OSError("network is unreachable")
+        return io.BytesIO(tarball)
+
+    with pytest.raises(vendor.VendorError, match="Could not download https://raw.example/demo/LICENSE"):
+        vendor.fetch_package(package, tmp_path, open_url=only_the_registry)
+
+
+def test_an_engine_folder_from_before_the_licenses_is_downloaded_again(tmp_path):
+    tarball = make_tarball({"package/dist/lib.js": b"library", "package/LICENSE": TEXT})
+    package = package_for(tarball, name="demo-lib", license=vendor.PackageLicense("LICENSE-demo.txt", sha256_of(TEXT)))
+    registry = FakeRegistry({package.tarball_url: tarball})
+    folder = vendor.engine_dir(tmp_path)
+    folder.mkdir(parents=True)
+    (folder / "lib.js").write_bytes(b"library")  # what a cifarium without the licenses left behind
+
+    vendor.ensure_engine(tmp_path, packages=(package,), open_url=registry)
+
+    assert (folder / "LICENSE-demo.txt").read_bytes() == TEXT
+    assert len(registry.calls) == 1
+    vendor.ensure_engine(tmp_path, packages=(package,), open_url=registry)
+    assert len(registry.calls) == 1
+
+
+def test_the_pinned_packages_name_where_their_licenses_come_from_and_their_digests():
+    transformers, ort = vendor.ENGINE_PACKAGES
+
+    assert transformers.license.member == "package/LICENSE" and transformers.license.url is None
+    assert transformers.license.stored_as == vendor.TRANSFORMERS_LICENSE_FILE
+    # The onnxruntime-web tarball carries no LICENSE; the text is the repository's at the commit the
+    # tarball names in package/__commit.txt, and that commit is the one of the pinned version.
+    assert ort.license.member is None and ort.license.stored_as == vendor.ORT_LICENSE_FILE
+    assert ort.license.url == ("https://raw.githubusercontent.com/microsoft/onnxruntime/"
+                               f"{vendor.ORT_WEB_COMMIT}/LICENSE")
+    assert vendor.ORT_WEB_COMMIT.startswith(vendor.ORT_WEB_VERSION.rsplit("-", 1)[-1])
+    assert len(vendor.ORT_WEB_COMMIT) == 40
+    for package in vendor.ENGINE_PACKAGES:
+        assert re.fullmatch(r"[0-9a-f]{64}", package.license.sha256), package.name
+        assert set(package.files).isdisjoint({package.license.stored_as})
+
+
+@pytest.mark.e2e
+def test_the_license_texts_of_the_pinned_engine_are_the_apache_and_the_mit_license():
+    folder = vendor.ensure_engine()
+
+    apache = (folder / vendor.TRANSFORMERS_LICENSE_FILE).read_text(encoding="utf-8")
+    mit = (folder / vendor.ORT_LICENSE_FILE).read_text(encoding="utf-8")
+    assert "Apache License" in apache and "Version 2.0, January 2004" in apache
+    assert "TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION" in apache
+    assert mit.startswith("MIT License") and "Copyright (c) Microsoft Corporation" in mit
+    assert "Permission is hereby granted, free of charge" in mit
 
 
 def test_ensure_engine_leaves_nothing_behind_on_failure(tmp_path):

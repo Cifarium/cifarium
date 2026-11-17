@@ -49,8 +49,33 @@ ENGINE_BYTES = {
 }
 
 
+# The license texts that go into LICENSES.txt of a build (ARCHITECTURE.md, section 7), stored next to
+# the engine files under these names.
+TRANSFORMERS_LICENSE_FILE = "LICENSE-transformers-js.txt"
+ORT_LICENSE_FILE = "LICENSE-onnxruntime-web.txt"
+# The commit onnxruntime-web 1.31.0-dev.20260914-8d85527a0 was built from: its tarball names it in
+# package/__commit.txt. The tarball carries no LICENSE (package.json says "MIT", the README sends
+# the reader to GitHub), so the text is taken from the repository at this very commit.
+ORT_WEB_COMMIT = "8d85527a010e294a26b274749f74294b2a32cec5"
+
+
 class VendorError(RuntimeError):
     """Engine files could not be downloaded or failed verification."""
+
+
+@dataclass(frozen=True)
+class PackageLicense:
+    """Where the text of a package's license is, and the digest it must have."""
+
+    stored_as: str
+    """File name in the engine folder."""
+    sha256: str
+    """Hex digest of the text as it is stored. The tarball is already pinned by its sha512; this
+    one also covers a text fetched from elsewhere and shows in a diff when a version moves."""
+    member: str | None = "package/LICENSE"
+    """Path of the text inside the tarball, or None when the tarball has none."""
+    url: str | None = None
+    """Where to fetch the text when the tarball has none."""
 
 
 @dataclass(frozen=True)
@@ -62,11 +87,17 @@ class NpmPackage:
     #: ``dist.integrity`` from the registry: ``sha512-<base64 digest of the tarball>``.
     integrity: str
     files: tuple[str, ...]
+    license: PackageLicense | None = None
 
     @property
     def tarball_url(self) -> str:
         basename = self.name.rsplit("/", 1)[-1]
         return f"{REGISTRY}/{self.name}/-/{basename}-{self.version}.tgz"
+
+    @property
+    def stored(self) -> tuple[str, ...]:
+        """Every file this package leaves in the engine folder: its files and its license."""
+        return self.files + ((self.license.stored_as,) if self.license else ())
 
 
 ENGINE_PACKAGES: tuple[NpmPackage, ...] = (
@@ -78,6 +109,10 @@ ENGINE_PACKAGES: tuple[NpmPackage, ...] = (
             "+Fi6p7tx/qVUJlKQgLXGim2W76rTOzz+eC0i7g=="
         ),
         files=(LIBRARY_FILE,),
+        license=PackageLicense(
+            TRANSFORMERS_LICENSE_FILE,
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",  # Apache-2.0
+        ),
     ),
     NpmPackage(
         name="onnxruntime-web",
@@ -87,6 +122,12 @@ ENGINE_PACKAGES: tuple[NpmPackage, ...] = (
             "CVyeAnK2InpmW8Uc3PL8XIuqtDeF6g=="
         ),
         files=(WASM_LOADER_FILE, WASM_BINARY_FILE),
+        license=PackageLicense(
+            ORT_LICENSE_FILE,
+            "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",  # MIT
+            member=None,
+            url=f"https://raw.githubusercontent.com/microsoft/onnxruntime/{ORT_WEB_COMMIT}/LICENSE",
+        ),
     ),
 )
 
@@ -118,7 +159,7 @@ def ensure_engine(
     every tarball passed verification, so a finished folder is always complete.
     """
     target = engine_dir(cache)
-    wanted = [name for package in packages for name in package.files]
+    wanted = [name for package in packages for name in package.stored]
     if all((target / name).is_file() for name in wanted):
         return target
 
@@ -143,9 +184,11 @@ def fetch_package(
     *,
     open_url: Callable[[str], BinaryIO] = _open_url,
 ) -> None:
-    """Download one tarball, verify its sha512 and copy ``package.files`` into ``dest``.
+    """Download one tarball, verify its sha512 and copy ``package.files`` and the license text
+    into ``dest``.
 
-    The archive is parsed only after its digest matched the pinned value.
+    The archive is parsed only after its digest matched the pinned value; the license text is
+    checked against its own pinned sha256.
     """
     algorithm, _, expected = package.integrity.partition("-")
     if algorithm != "sha512" or not expected:
@@ -170,6 +213,47 @@ def fetch_package(
 
         tarball.seek(0)
         _copy_dist_files(tarball, package, dest)
+        if package.license is not None:
+            tarball.seek(0)
+            _store_license(tarball, package, package.license, dest, open_url)
+
+
+def _store_license(
+    tarball: BinaryIO,
+    package: NpmPackage,
+    license: PackageLicense,
+    dest: Path,
+    open_url: Callable[[str], BinaryIO],
+) -> None:
+    """Write the license text of ``package`` into ``dest`` after checking its sha256."""
+    text: bytes | None = None
+    if license.member is not None:
+        try:
+            with tarfile.open(fileobj=tarball, mode="r:gz") as archive:
+                member = archive.getmember(license.member)
+                source = archive.extractfile(member) if member.isreg() else None
+                text = source.read() if source is not None else None
+        except KeyError:
+            text = None
+        except tarfile.TarError as error:
+            raise VendorError(f"Could not read the {package.name} tarball: {error}") from error
+        if text is None:
+            raise VendorError(f"{package.name} {package.version} has no {license.member}")
+    elif license.url is not None:
+        try:
+            with open_url(license.url) as response:
+                text = response.read()
+        except OSError as error:
+            raise VendorError(f"Could not download {license.url}: {error}") from error
+    if text is None:
+        raise VendorError(f"{package.name} {package.version}: no source for its license text")
+    actual = hashlib.sha256(text).hexdigest()
+    if not hmac.compare_digest(actual, license.sha256):
+        raise VendorError(
+            f"Checksum mismatch for the license of {package.name} {package.version}: "
+            f"expected sha256 {license.sha256}, got {actual}"
+        )
+    (dest / license.stored_as).write_bytes(text)
 
 
 def _copy_dist_files(tarball: BinaryIO, package: NpmPackage, dest: Path) -> None:

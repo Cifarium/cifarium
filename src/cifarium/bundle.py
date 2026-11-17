@@ -136,7 +136,7 @@ def write(
         _write_bytes(folder / PAGE, (templates / PAGE).read_bytes())
         for name in HOSTING_FILES:
             _write_bytes(folder / "hosting" / name, (templates / "hosting" / name).read_bytes())
-        _write_bytes(folder / LICENSES, licenses_text(manifest, entry))
+        _write_bytes(folder / LICENSES, licenses_text(manifest, entry, engine_dir))
         _write_bytes(folder / MANIFEST, _manifest_text(manifest))
 
         now = owned(manifest)
@@ -249,8 +249,15 @@ def stale(before: Iterable[str], now: Iterable[str]) -> list[str]:
     return sorted(name for name in set(before) if name not in keep)
 
 
-def licenses_text(manifest: Mapping[str, Any], entry: catalog.Entry) -> bytes:
+def licenses_text(manifest: Mapping[str, Any], entry: catalog.Entry, engine_dir: Path) -> bytes:
+    """``LICENSES.txt``: the parts of the folder and their licenses, the full texts of the licenses of
+    the engine (read from ``engine_dir``, where :mod:`vendor` stored them) and the notice of the
+    model's license when the catalog has one."""
     template = string.Template((paths.web_dir() / TEMPLATES / LICENSES).read_text(encoding="utf-8"))
+    notice = ""
+    if entry.notice:
+        lines = "\n".join(f"    {line}".rstrip() for line in entry.notice.splitlines())
+        notice = f"\n\n  The notice that goes with the model, from its terms or its card:\n{lines}"
     text = template.substitute(
         cifarium=manifest["cifarium"],
         transformers=manifest["engine"]["transformers"],
@@ -261,8 +268,22 @@ def licenses_text(manifest: Mapping[str, Any], entry: catalog.Entry) -> bytes:
         license=entry.license,
         license_source=entry.license_source,
         model_path=manifest["model"]["path"],
+        model_notice=notice,
+        transformers_license=_license_of(engine_dir, vendor.TRANSFORMERS_LICENSE_FILE),
+        onnxruntime_license=_license_of(engine_dir, vendor.ORT_LICENSE_FILE),
     )
     return text.replace("\r\n", "\n").encode("utf-8")
+
+
+def _license_of(engine_dir: Path, name: str) -> str:
+    """The text of a license stored with the engine, with the line ends of the file and no blank
+    lines around it."""
+    try:
+        text = (engine_dir / name).read_text(encoding="utf-8")
+    except OSError:
+        raise BundleError(f"{engine_dir / name} is missing: delete the folder {engine_dir} and run "
+                          "`cifarium build` again to download the engine with its licenses") from None
+    return text.replace("\r\n", "\n").strip("\n")
 
 
 def _centres(names: list[str], centres: np.ndarray) -> np.ndarray:

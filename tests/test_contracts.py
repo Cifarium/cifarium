@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 import pytest
-from test_bundle import ENGINE_SIZES, GRAPH, MODEL_FILES, Sources, fill
+from test_bundle import GRAPH, MODEL_FILES, Sources, fill, fill_engine
 
 from cifarium import bundle, paths
 
@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def sources(tmp_path: Path) -> Sources:
     engine, model = tmp_path / "cache" / "engine", tmp_path / "cache" / "model"
-    fill(engine, ENGINE_SIZES)
+    fill_engine(engine)
     fill(model, {**MODEL_FILES, **GRAPH})
     return Sources(engine, model)
 

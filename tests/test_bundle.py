@@ -27,11 +27,22 @@ LABELS = ["shipping", "returns", "technical"]
 CENTRES = np.eye(3)
 
 
+APACHE = "Apache License\nVersion 2.0, January 2004\nTEST-APACHE-BODY $notaplaceholder\n"
+MIT = "MIT License\n\nCopyright (c) Test Corporation\nTEST-MIT-BODY\n"
+
+
 def fill(folder: Path, sizes: dict[str, int]) -> None:
     for number, (name, size) in enumerate(sizes.items()):
         target = folder / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(bytes([number + 1]) * size)
+
+
+def fill_engine(folder: Path) -> None:
+    """The engine folder of the cache: the three files and the two license texts :mod:`vendor` stores."""
+    fill(folder, ENGINE_SIZES)
+    (folder / vendor.TRANSFORMERS_LICENSE_FILE).write_text(APACHE, encoding="utf-8")
+    (folder / vendor.ORT_LICENSE_FILE).write_text(MIT.replace("\n", "\r\n"), encoding="utf-8", newline="")
 
 
 def entry(revision: str = REVISION, license: str = "apache-2.0") -> catalog.Entry:
@@ -60,7 +71,7 @@ class Sources:
 @pytest.fixture
 def sources(tmp_path: Path) -> Sources:
     engine, model = tmp_path / "cache" / "engine", tmp_path / "cache" / "model"
-    fill(engine, ENGINE_SIZES)
+    fill_engine(engine)
     fill(model, {**MODEL_FILES, **GRAPH})
     return Sources(engine, model)
 
@@ -204,14 +215,86 @@ def test_runtime_and_page_are_the_package_files_byte_for_byte(sources, out):
 def test_the_license_file_names_every_part_and_has_no_placeholder_left(sources, out):
     sources.write(out, candidate(license="gemma"))
 
-    text = (out / "LICENSES.txt").read_text(encoding="utf-8")
-    assert "$" not in text and "\r" not in text
+    text = (out / "LICENSES.txt").read_bytes().decode("utf-8")
+    assert "\r" not in text
+    assert not re.search(r"\$(?:cifarium|transformers|onnxruntime_web|engine_path|model_path|repo|revision|"
+                         r"license|license_source|model_notice|transformers_license|onnxruntime_license)\b", text)
     assert f"Transformers.js {vendor.TRANSFORMERS_VERSION}" in text and "Apache-2.0" in text
     assert f"ONNX Runtime Web {vendor.ORT_WEB_VERSION}" in text and "MIT" in text
     assert "License: gemma" in text
     assert "https://huggingface.co/org/source" in text
     assert f"https://huggingface.co/org/tiny at revision {REVISION}" in text
     assert f"models/{REVISION}/org/tiny/" in text
+
+
+def test_the_license_file_holds_the_full_texts_of_the_licenses_of_the_engine(sources, out):
+    sources.write(out)
+
+    text = (out / "LICENSES.txt").read_text(encoding="utf-8")
+    # Both texts whole and as the engine folder stores them (one with CRLF there, LF here), and a
+    # dollar sign in a license text is not taken for a placeholder.
+    assert APACHE.strip("\n") in text
+    assert MIT.strip("\n") in text
+    assert "TEST-APACHE-BODY $notaplaceholder" in text
+    assert text.index("Apache License\nVersion 2.0") < text.index("MIT License\n\nCopyright (c) Test Corporation")
+    assert text.endswith(MIT.strip("\n") + "\n")
+
+
+def test_the_notice_of_the_model_goes_into_the_license_file_as_the_catalog_has_it(sources, out):
+    gemma = catalog.Entry(Path("g.yaml"), "tiny", "org/tiny", REVISION, "gemma", "org/source", ("en",),
+                          dict(MODEL_FILES), entry().variants, (),
+                          "Gemma is provided under and subject to the Gemma Terms of Use found at x\nSecond line")
+    who = catalog.Candidate(gemma, candidate().recipe)
+
+    sources.write(out, who)
+
+    text = (out / "LICENSES.txt").read_text(encoding="utf-8")
+    assert ("  Taken from https://huggingface.co/org/tiny at revision " + REVISION + ".\n\n"
+            "  The notice that goes with the model, from its terms or its card:\n"
+            "    Gemma is provided under and subject to the Gemma Terms of Use found at x\n"
+            "    Second line\n\n"
+            "When you pass the files on") in text
+
+
+def test_the_models_of_the_catalog_that_need_a_notice_get_it_in_their_license_file(sources):
+    labels = [Label(name) for name in LABELS]
+    with_notice = {c.entry.id: c for c in catalog.candidates("classify") if c.entry.notice}
+
+    assert set(with_notice) == {"embeddinggemma-300m", "mobilebert-uncased-mnli"}
+    for who in with_notice.values():
+        manifest = bundle.manifest_of(who, labels, bundle.centres_bytes(who, 3))
+        text = bundle.licenses_text(manifest, who.entry, sources.engine).decode("utf-8")
+        for line in who.entry.notice.splitlines():
+            assert f"    {line}".rstrip() in text, (who.entry.id, line)
+    gemma = bundle.licenses_text(
+        bundle.manifest_of(with_notice["embeddinggemma-300m"], labels, 0),
+        with_notice["embeddinggemma-300m"].entry, sources.engine).decode("utf-8")
+    # The sentence the terms of Gemma ask to ship with every distribution of the model.
+    assert "Gemma is provided under and subject to the Gemma Terms of Use found at gemma.ai/resources/terms" in gemma
+    assert "License: gemma" in gemma
+
+
+def test_a_model_without_a_notice_has_no_notice_paragraph(sources, out):
+    sources.write(out)
+
+    assert "The notice that goes with the model" not in (out / "LICENSES.txt").read_text(encoding="utf-8")
+
+
+def test_the_file_of_licenses_is_the_same_bytes_every_time(sources, tmp_path):
+    first, second = tmp_path / "one", tmp_path / "two"
+    sources.write(first)
+    sources.write(second)
+
+    assert (first / "LICENSES.txt").read_bytes() == (second / "LICENSES.txt").read_bytes()
+
+
+def test_an_engine_folder_without_the_license_texts_stops_the_build_and_says_what_to_do(sources, out):
+    (sources.engine / vendor.ORT_LICENSE_FILE).unlink()
+
+    with pytest.raises(bundle.BundleError, match=r"LICENSE-onnxruntime-web\.txt is missing: delete the folder"):
+        sources.write(out)
+
+    assert not (out / "cifarium.json").exists()
 
 
 # --- what the sources must be -------------------------------------------------------------------

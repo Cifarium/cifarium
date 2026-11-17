@@ -111,6 +111,13 @@ def test_build_chooses_all_minilm_for_the_english_set_and_writes_its_folder(engl
     for name in ("index.html", "cifarium.js", "cifarium-worker.js", "LICENSES.txt", "hosting/_headers",
                  "hosting/vercel.json", "hosting/nginx.conf"):
         assert (english_build.folder / name).is_file(), name
+    # LICENSES.txt carries the whole of both licenses of the engine, as the pinned files give them.
+    licenses = (english_build.folder / "LICENSES.txt").read_text(encoding="utf-8")
+    assert "TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION" in licenses
+    assert "END OF TERMS AND CONDITIONS" in licenses
+    assert "MIT License\n\nCopyright (c) Microsoft Corporation" in licenses
+    assert 'THE SOFTWARE IS PROVIDED "AS IS"' in licenses
+    assert "License: apache-2.0" in licenses and "The notice that goes with the model" not in licenses
     assert not paths.profile_dir().exists()
 
 
