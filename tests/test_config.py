@@ -32,11 +32,9 @@ def test_minimal_file_gets_the_defaults(tmp_path):
     assert cfg.path == (tmp_path / "task.yaml").resolve()
     assert cfg.examples == (tmp_path / "examples.jsonl").resolve()
     assert cfg.labels is None
-    assert cfg.documents is None
     assert cfg.pass_rate == 0.85
-    assert cfg.similarity is None
-    assert cfg.limits == Limits(max_size_mb=300.0, max_latency_ms=None, min_tokens_per_sec=None)
-    assert cfg.license == "commercial"
+    assert cfg.limits == Limits(max_size_mb=300.0, max_latency_ms=None)
+    assert cfg.license == "permissive"
     assert cfg.host == "bundle"
     assert cfg.output == (tmp_path / "cifarium-out").resolve()
 
@@ -68,7 +66,7 @@ def test_an_empty_value_means_the_default(tmp_path):
 
     assert cfg.pass_rate == 0.85
     assert cfg.limits == Limits()
-    assert cfg.license == "commercial"
+    assert cfg.license == "permissive"
     assert cfg.output == (tmp_path / "cifarium-out").resolve()
 
 
@@ -129,10 +127,16 @@ def test_labels_are_a_list_or_names_with_descriptions(tmp_path, labels):
         (BASE + "output: .", "holds task.yaml itself; name a separate folder, like `output: ./cifarium-out`"),
         (BASE + "output: ..", "holds task.yaml itself"),
         (BASE + "labels: [Bug, bug]", 'labels, item 2: label "bug" differs from "Bug" only in letter case'),
-        (BASE + "limits:\n  min_tokens_per_sec: 10", "limits.min_tokens_per_sec: used only by task summarize"),
-        (BASE + "similarity: 0.8", "similarity: used only by task summarize; this file has task classify"),
-        (BASE + "documents: ./docs.jsonl", "documents: used only by task search"),
-        (BASE + "license: MIT", 'license: must be commercial or any; got "MIT"'),
+        (BASE + "limits:\n  min_tokens_per_sec: 10",
+         "limits.min_tokens_per_sec: reserved in this version (it will belong to the summarize task); remove the key"),
+        (BASE + "similarity: 0.8",
+         "similarity: reserved in this version (it will belong to the summarize task); remove the key"),
+        (BASE + "documents: ./docs.jsonl",
+         "documents: reserved in this version (it will belong to the search task); remove the key"),
+        (BASE + "license: MIT", 'license: must be permissive or any; got "MIT"'),
+        (BASE + "license: Permissive", "did you mean permissive?"),
+        (BASE + "license: commercial",
+         'license: "commercial" is now called "permissive"; write `license: permissive`'),
         (BASE + "host: cdn", 'host: must be bundle or hub; got "cdn"'),
         (BASE + "host: Hub", "did you mean hub?"),
         (BASE + "output: ./examples.jsonl", "is a file; name a folder"),
@@ -150,6 +154,45 @@ def test_each_problem_names_the_key_and_what_is_wrong(tmp_path, text, expected):
     found = problems_of(tmp_path, text)
 
     assert any(expected in problem for problem in found), found
+
+
+@pytest.mark.parametrize(
+    ("line", "key"),
+    [
+        ("documents: 5", "documents"),
+        ("documents: [a, b]", "documents"),
+        ("documents: ./no/such/file.jsonl", "documents"),
+        ("similarity: 0.8", "similarity"),
+        ("similarity: 85", "similarity"),
+        ("similarity: high", "similarity"),
+        ("limits:\n  min_tokens_per_sec: 10", "limits.min_tokens_per_sec"),
+        ("limits:\n  min_tokens_per_sec: -1", "limits.min_tokens_per_sec"),
+        ("limits:\n  min_tokens_per_sec: [fast]", "limits.min_tokens_per_sec"),
+    ],
+)
+def test_a_reserved_key_answers_the_same_whatever_its_value_is(tmp_path, line, key):
+    found = problems_of(tmp_path, BASE + line + "\n")
+
+    assert len(found) == 1 and found[0].startswith(f"{key}: reserved in this version"), found
+
+
+@pytest.mark.parametrize("line", ["documents:", "similarity:", "limits:\n  min_tokens_per_sec:"])
+def test_a_reserved_key_without_a_value_is_the_same_as_no_key(tmp_path, line):
+    assert config.load(write(tmp_path, BASE + line + "\n")).limits == Limits()
+
+
+def test_a_reserved_key_is_reported_with_a_task_that_is_broken_or_not_supported_yet(tmp_path):
+    found = problems_of(tmp_path, "task: search\nexamples: ./examples.jsonl\ndocuments: ./docs.jsonl\n")
+
+    assert any(problem.startswith("documents: reserved in this version") for problem in found)
+    assert any("task: search is not supported yet" in problem for problem in found)
+
+
+def test_the_reserved_keys_are_known_so_a_typo_of_them_is_still_told_as_a_typo(tmp_path):
+    found = problems_of(tmp_path, BASE + "documents: ./d.jsonl\ndocument: ./d.jsonl\n")
+
+    assert "document: unknown key" in " ".join(found)
+    assert any(problem.startswith("documents: reserved") for problem in found)
 
 
 @pytest.mark.parametrize("task", ["search", "summarize"])

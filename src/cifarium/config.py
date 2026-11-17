@@ -21,35 +21,42 @@ DEFAULT_FILE = "cifarium.yaml"
 
 TASKS = ("classify", "search", "summarize")
 SUPPORTED_TASKS = ("classify",)
-LICENSES = ("commercial", "any")
+LICENSES = ("permissive", "any")
 HOSTS = ("bundle", "hub")
 
+# The defaults are part of the contract (ARCHITECTURE.md, sections 10 and 14): changing one does
+# not break a settings file, but it changes what a build does, so it goes into CHANGELOG.md.
 DEFAULT_PASS_RATE = 0.85
-DEFAULT_SIMILARITY = 0.75
 DEFAULT_MAX_SIZE_MB = 300.0
+DEFAULT_LICENSE = "permissive"
+DEFAULT_HOST = "bundle"
 DEFAULT_OUTPUT = "./cifarium-out"
 
+# The keys a settings file can use in this version, and the limits.
 KEYS = (
     "task",
     "examples",
     "labels",
-    "documents",
     "pass_rate",
-    "similarity",
     "limits",
     "license",
     "host",
     "output",
 )
-LIMIT_KEYS = ("max_size_mb", "max_latency_ms", "min_tokens_per_sec")
+LIMIT_KEYS = ("max_size_mb", "max_latency_ms")
 
-# Keys that mean something for one task only, and the task.
-_ONLY_FOR = {
-    "labels": "classify",
+# Keys of tasks that are not released yet. They are known, so a typo is not mistaken for them, but
+# they answer "reserved in this version" whatever their value is: nothing about the value is
+# checked, so a file that names one cannot start to mean something else when the task arrives.
+# Key (limits are written `limits.<key>`) -> the task the key will belong to.
+RESERVED = {
     "documents": "search",
     "similarity": "summarize",
     "limits.min_tokens_per_sec": "summarize",
 }
+
+# A value that was renamed: key -> old value -> the value to write now.
+RENAMED = {"license": {"commercial": "permissive"}}
 
 # More than this many problems are summarised in one line.
 MAX_SHOWN_PROBLEMS = 20
@@ -138,23 +145,20 @@ class Label:
 class Limits:
     max_size_mb: float = DEFAULT_MAX_SIZE_MB
     max_latency_ms: float | None = None
-    min_tokens_per_sec: float | None = None
 
 
 @dataclass(frozen=True)
 class Config:
-    """Checked settings. Paths are absolute."""
+    """Checked settings. Paths are absolute. Reserved keys (:data:`RESERVED`) never get here."""
 
     path: Path
     task: str
     examples: Path
     labels: tuple[Label, ...] | None = None
-    documents: Path | None = None
     pass_rate: float = DEFAULT_PASS_RATE
-    similarity: float | None = None
     limits: Limits = field(default_factory=Limits)
-    license: str = "commercial"
-    host: str = "bundle"
+    license: str = DEFAULT_LICENSE
+    host: str = DEFAULT_HOST
     output: Path = Path(DEFAULT_OUTPUT)
 
 
@@ -225,22 +229,22 @@ class _Checker:
         self.problems.append(f"{key}: {message}")
 
     def run(self) -> Config:
+        known = KEYS + tuple(key for key in RESERVED if "." not in key)
         for key in self.data:
-            if key not in KEYS:
+            if key not in known:
                 name = str(key)
                 self.add(name, "unknown key" + (did_you_mean(name, KEYS) or f"; the keys are {', '.join(KEYS)}"))
+            elif key in RESERVED and self.data[key] is not None:
+                self._reserved(key)
 
         self.task = self._task()
         examples = self._path("examples", required=True, must_exist=True)
-        labels = self._labels() if self._applies("labels") else None
-        documents = self._path("documents", required=True, must_exist=True) if self._applies("documents") else None
+        # Only a supported task has keys of its own; with a broken `task` they wait until it is fixed.
+        labels = self._labels() if self.task == "classify" else None
         pass_rate = self._fraction("pass_rate", DEFAULT_PASS_RATE)
-        similarity = None
-        if self._applies("similarity"):
-            similarity = self._fraction("similarity", DEFAULT_SIMILARITY)
         limits = self._limits()
-        license_ = self._choice("license", LICENSES, "commercial")
-        host = self._choice("host", HOSTS, "bundle")
+        license_ = self._choice("license", LICENSES, DEFAULT_LICENSE)
+        host = self._choice("host", HOSTS, DEFAULT_HOST)
         output = self._path("output", default=DEFAULT_OUTPUT)
 
         if self.problems:
@@ -251,33 +255,17 @@ class _Checker:
             task=self.task,
             examples=examples,
             labels=labels,
-            documents=documents,
             pass_rate=pass_rate,
-            similarity=similarity,
             limits=limits,
             license=license_,
             host=host,
             output=output,
         )
 
-    def _applies(self, key: str) -> bool:
-        """Whether to read ``key``. Reports a key that belongs to another task.
-
-        When ``task`` itself is broken there is nothing to compare with, so the
-        task-specific keys are skipped silently until it is fixed.
-        """
-        task = _ONLY_FOR[key]
-        if self.task == task:
-            return True
-        if self.task is not None and self._get(key) is not None:
-            self.add(key, f"used only by task {task}; this file has task {self.task}")
-        return False
-
-    def _get(self, key: str) -> Any:
-        if key.startswith("limits."):
-            limits = self.data.get("limits")
-            return limits.get(key.split(".", 1)[1]) if isinstance(limits, dict) else None
-        return self.data.get(key)
+    def _reserved(self, key: str) -> None:
+        """A key of a task that is not released: answered without looking at its value."""
+        self.add(key, f"reserved in this version (it will belong to the {RESERVED[key]} task); "
+                 "remove the key")
 
     def _task(self) -> str | None:
         value = self.data.get("task")
@@ -348,6 +336,10 @@ class _Checker:
             return default
         if isinstance(value, str) and value in choices:
             return value
+        if isinstance(value, str) and value in RENAMED.get(key, {}):
+            now = RENAMED[key][value]
+            self.add(key, f"{describe(value)} is now called {describe(now)}; write `{key}: {now}`")
+            return default
         hint = did_you_mean(value, choices) if isinstance(value, str) else ""
         self.add(key, f"must be {' or '.join(choices)}; got {describe(value)}{hint}")
         return default
@@ -359,21 +351,19 @@ class _Checker:
         if not isinstance(value, dict):
             self.add("limits", f"must be a group of keys: {', '.join(LIMIT_KEYS)}; got {describe(value)}")
             return Limits()
+        reserved = tuple(key.split(".", 1)[1] for key in RESERVED if key.startswith("limits."))
         for key in value:
-            if key not in LIMIT_KEYS:
+            if key in reserved:
+                if value[key] is not None:
+                    self._reserved(f"limits.{key}")
+            elif key not in LIMIT_KEYS:
                 name = str(key)
                 self.add(f"limits.{name}", "unknown key" + (
                     did_you_mean(name, LIMIT_KEYS) or f"; the keys are {', '.join(LIMIT_KEYS)}"))
-        units = {
-            "max_size_mb": "megabytes",
-            "max_latency_ms": "milliseconds",
-            "min_tokens_per_sec": "tokens per second",
-        }
+        units = {"max_size_mb": "megabytes", "max_latency_ms": "milliseconds"}
         numbers: dict[str, float | None] = {}
         for key in LIMIT_KEYS:
             full = f"limits.{key}"
-            if full in _ONLY_FOR and not self._applies(full):
-                continue
             number = value.get(key)
             if number is None:
                 continue

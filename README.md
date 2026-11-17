@@ -62,4 +62,4 @@ cifarium build
 
 ## License
 
-Apache-2.0. Models keep their own licenses; by default cifarium only picks models whose license allows commercial use.
+Apache-2.0. Models keep their own licenses; by default (`license: permissive`) cifarium only picks models under Apache-2.0, MIT or BSD. `license: any` also takes models with terms of their own, such as Gemma.

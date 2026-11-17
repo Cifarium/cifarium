@@ -48,7 +48,7 @@ def task() -> Examples:
 
 def settings(limit_ms: float | None = None, **changes) -> Config:
     config = Config(Path("cifarium.yaml"), "classify", Path("examples.jsonl"),
-                    limits=Limits(max_size_mb=300, max_latency_ms=limit_ms), license="commercial")
+                    limits=Limits(max_size_mb=300, max_latency_ms=limit_ms), license="permissive")
     return replace(config, **changes)
 
 
@@ -279,7 +279,7 @@ def test_run_prints_the_table_and_the_chosen_model(tmp_path, chrome, capsys):
     # Every catalog candidate is in the table, the sorted-out ones with their reason.
     for candidate in catalog.candidates("classify"):
         assert candidate.entry.id in out
-    assert "license gemma does not pass `license: commercial`" in out
+    assert "license gemma does not pass `license: permissive`" in out
     # One run of the chosen model, one single-thread run on a few examples.
     assert chrome.downloads == ["Xenova/all-MiniLM-L6-v2"]
     assert [job.get("threads") for job in chrome.jobs] == [None, 1]
@@ -373,7 +373,7 @@ def test_a_miss_of_the_chosen_model_names_its_line_in_the_examples_file(tmp_path
 
 
 def test_run_goes_past_slow_models_and_fails_when_none_is_fast_enough(tmp_path, chrome, capsys):
-    code = build.run(write_task(tmp_path, "license: commercial\nlimits:\n  max_latency_ms: 5\n"))
+    code = build.run(write_task(tmp_path, "license: permissive\nlimits:\n  max_latency_ms: 5\n"))
 
     out, err = capsys.readouterr()
     assert code == 1

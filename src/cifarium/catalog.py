@@ -16,8 +16,10 @@ from .config import TASKS, TaskFileError, describe, did_you_mean, read_yaml
 
 CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
 
-# `license: commercial` in the settings lets through only these licenses.
-COMMERCIAL_LICENSES = frozenset({"apache-2.0", "mit", "bsd-2-clause", "bsd-3-clause"})
+# `license: permissive` in the settings lets through only these licenses: the ones that allow
+# commercial use with no terms to accept beyond keeping the notice. A model that allows commercial
+# use under terms of its own (Gemma) is not among them; `license: any` takes it.
+PERMISSIVE_LICENSES = frozenset({"apache-2.0", "mit", "bsd-2-clause", "bsd-3-clause"})
 
 KEYS = ("id", "repo", "revision", "license", "license_source", "languages",
         "common_files", "variants", "recipes")
@@ -87,9 +89,9 @@ class Candidate:
     recipe: Recipe
 
 
-def is_commercial(license: str) -> bool:
-    """Whether a model with this license passes ``license: commercial`` in the settings."""
-    return license in COMMERCIAL_LICENSES
+def is_permissive(license: str) -> bool:
+    """Whether a model with this license passes ``license: permissive`` in the settings."""
+    return license in PERMISSIVE_LICENSES
 
 
 def load(folder: Path | None = None) -> tuple[Entry, ...]:

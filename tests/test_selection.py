@@ -52,7 +52,7 @@ def examples_of(texts: list[str] | None = None, expected: list[str] | None = Non
 
 def settings(**changes) -> Config:
     config = Config(Path("cifarium.yaml"), "classify", Path("examples.jsonl"),
-                    limits=Limits(max_size_mb=300), license="commercial")
+                    limits=Limits(max_size_mb=300), license="permissive")
     return replace(config, **changes)
 
 
@@ -222,21 +222,21 @@ def test_the_rule_of_passing_lives_in_one_function(monkeypatch):
 # --- what the settings sort out ----------------------------------------------------------------
 
 
-def test_license_commercial_sorts_out_a_model_that_is_not_permissive_and_license_any_does_not():
+def test_license_permissive_sorts_out_a_model_that_is_not_permissive_and_license_any_does_not():
     gemma = make("gemma", 10 * MB, license="gemma")
 
-    commercial, bench = run([gemma], {"gemma": vectors()})
+    permissive, bench = run([gemma], {"gemma": vectors()})
     anything, _ = run([gemma], {"gemma": vectors()}, config=settings(license="any"))
 
     assert bench.calls == []
-    assert commercial.outcomes[0].verdict is Verdict.LICENSE
-    assert commercial.outcomes[0].message == "license gemma does not pass `license: commercial`"
-    assert not commercial.outcomes[0].tried
+    assert permissive.outcomes[0].verdict is Verdict.LICENSE
+    assert permissive.outcomes[0].message == "license gemma does not pass `license: permissive`"
+    assert not permissive.outcomes[0].tried
     assert anything.chosen is not None
 
 
 @pytest.mark.parametrize("license", ["apache-2.0", "mit", "bsd-2-clause", "bsd-3-clause"])
-def test_permissive_licenses_pass_commercial(license):
+def test_permissive_licenses_pass_license_permissive(license):
     result, _ = run([make("m", license=license)], {"m": vectors()})
 
     assert result.chosen is not None
@@ -415,7 +415,7 @@ def test_on_the_real_catalog_russian_examples_reach_only_the_multilingual_models
     assert result.chosen is None
 
 
-def test_on_the_real_catalog_commercial_english_work_starts_from_the_lightest_model():
+def test_on_the_real_catalog_permissive_english_work_starts_from_the_lightest_model():
     candidates = catalog.candidates("classify")
     bench = FakeBench({entry_id: vectors() for entry_id in {c.entry.id for c in candidates}})
 
@@ -424,5 +424,5 @@ def test_on_the_real_catalog_commercial_english_work_starts_from_the_lightest_mo
     assert bench.calls == ["all-minilm-l6-v2"]
     assert result.chosen.candidate.entry.id == "all-minilm-l6-v2"
     by_verdict = {outcome.candidate.entry.id: outcome.verdict for outcome in result.outcomes}
-    assert by_verdict["embeddinggemma-300m"] is Verdict.LICENSE  # gemma is not a commercial license
+    assert by_verdict["embeddinggemma-300m"] is Verdict.LICENSE  # gemma is not a permissive license
     assert by_verdict["multilingual-e5-small"] is Verdict.NOT_TRIED

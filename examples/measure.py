@@ -37,7 +37,7 @@ from cifarium.bench import decode_vectors, embed_job, open_bench
 
 HERE = Path(__file__).resolve().parent
 PARTS = ("english", "russian")
-LICENSES = ("commercial", "any")
+LICENSES = ("permissive", "any")
 
 SEED = 2026
 RANDOM_SAMPLES = 5

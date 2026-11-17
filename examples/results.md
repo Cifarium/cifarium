@@ -12,7 +12,7 @@ Score on the 20 (leave one out) / score on the held-out part, in per cent. Sampl
 
 Model taken by `selection.select`, and its score on the held-out part:
 
-| sample | license: commercial | license: any |
+| sample | license: permissive | license: any |
 |---|---|---|
 | s0 | all-minilm-l6-v2: 95 / 83 | all-minilm-l6-v2: 95 / 83 |
 | s1 | all-minilm-l6-v2: 85 / 87 | all-minilm-l6-v2: 85 / 87 |
@@ -21,7 +21,7 @@ Model taken by `selection.select`, and its score on the held-out part:
 | s4 | all-minilm-l6-v2: 95 / 80 | all-minilm-l6-v2: 95 / 80 |
 | s5 | bge-small-en-v1.5: 90 / 88 | bge-small-en-v1.5: 90 / 88 |
 
-license commercial: no model passes on the 20 in 0 of 5 random samples []; the chosen model has a held-out score below 80% in 0 of them []
+license permissive: no model passes on the 20 in 0 of 5 random samples []; the chosen model has a held-out score below 80% in 0 of them []
 license any: no model passes on the 20 in 0 of 5 random samples []; the chosen model has a held-out score below 80% in 0 of them []
 
 | model | 20 examples, wall | model load | an example (first job) | an example (all jobs) | wall per example, held-out jobs |
@@ -46,7 +46,7 @@ Score on the 20 (leave one out) / score on the held-out part, in per cent. Sampl
 
 Model taken by `selection.select`, and its score on the held-out part:
 
-| sample | license: commercial | license: any |
+| sample | license: permissive | license: any |
 |---|---|---|
 | s0 | paraphrase-multilingual-minilm-l12-v2: 90 / 89 | paraphrase-multilingual-minilm-l12-v2: 90 / 89 |
 | s1 | none | embeddinggemma-300m: 95 / 100 |
@@ -55,7 +55,7 @@ Model taken by `selection.select`, and its score on the held-out part:
 | s4 | paraphrase-multilingual-minilm-l12-v2: 85 / 81 | paraphrase-multilingual-minilm-l12-v2: 85 / 81 |
 | s5 | none | embeddinggemma-300m: 90 / 99 |
 
-license commercial: no model passes on the 20 in 3 of 5 random samples [1, 3, 5]; the chosen model has a held-out score below 80% in 0 of them []
+license permissive: no model passes on the 20 in 3 of 5 random samples [1, 3, 5]; the chosen model has a held-out score below 80% in 0 of them []
 license any: no model passes on the 20 in 0 of 5 random samples []; the chosen model has a held-out score below 80% in 0 of them []
 
 | model | 20 examples, wall | model load | an example (first job) | an example (all jobs) | wall per example, held-out jobs |

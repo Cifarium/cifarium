@@ -80,7 +80,7 @@ def test_other_tasks_have_no_candidates_yet():
 
 
 def test_only_gemma_and_the_unknown_license_need_license_any():
-    others = {entry.id: entry.license for entry in catalog.load() if not catalog.is_commercial(entry.license)}
+    others = {entry.id: entry.license for entry in catalog.load() if not catalog.is_permissive(entry.license)}
 
     assert others == {"embeddinggemma-300m": "gemma", "mobilebert-uncased-mnli": "unknown"}
 
@@ -102,12 +102,12 @@ def test_first_load_counts_the_common_files_and_the_variant(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("license", "commercial"),
+    ("license", "permissive"),
     [("apache-2.0", True), ("mit", True), ("bsd-3-clause", True), ("gemma", False),
      ("unknown", False), ("cc-by-nc-4.0", False)],
 )
-def test_commercial_licenses(license, commercial):
-    assert catalog.is_commercial(license) is commercial
+def test_permissive_licenses(license, permissive):
+    assert catalog.is_permissive(license) is permissive
 
 
 @pytest.mark.parametrize(

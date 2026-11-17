@@ -157,8 +157,8 @@ def skip(
     """Why the settings sort the candidate out before it runs, or None. The first reason found
     is the one told: license, size, language, then a recipe that is not ready."""
     entry = candidate.entry
-    if config.license == "commercial" and not catalog.is_commercial(entry.license):
-        return Verdict.LICENSE, f"license {entry.license} does not pass `license: commercial`"
+    if config.license == "permissive" and not catalog.is_permissive(entry.license):
+        return Verdict.LICENSE, f"license {entry.license} does not pass `license: permissive`"
     limit = config.limits.max_size_mb
     if size > limit * BYTES_PER_MB:
         return Verdict.SIZE, (
