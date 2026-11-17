@@ -38,13 +38,27 @@
  * @property {string} dtype Variant of the weights, for example "q8".
  * @property {"wasm"|"webgpu"} device Processor or graphics card.
  * @property {string[]} inputs Texts to turn into vectors.
+ * @property {"mean"|"cls"|"none"} pooling How token vectors become one vector. "none": the
+ *   model pools by itself and returns the finished vector as its `sentence_embedding` output.
+ * @property {string} prefix Text put in front of every input, for example "query: ".
+ * @property {string} [modelFileName] Graph name without the folder and without the dtype's
+ *   suffix, which the library adds: "model" loads onnx/model_quantized.onnx at q8.
+ *   Passed as `model_file_name`; the library's default is "model".
+ * @property {number} [externalData] Number of `.onnx_data` files next to the graph. Passed
+ *   to the library as `use_external_data_format` when above 0; otherwise the library
+ *   reads it from `transformers.js_config` in the model's config.json.
  */
+
+/** @type {readonly string[]} */
+const POOLINGS = ['mean', 'cls', 'none'];
 
 /**
  * @typedef {Object} EmbedResult
  * @property {number} count Number of vectors.
  * @property {number} dims Length of every vector.
- * @property {string} vectors count × dims float32 values, little-endian, in base64.
+ * @property {string} vectors count × dims float32 values, little-endian, in base64. Every
+ *   vector is scaled to unit length, so closeness is a plain dot product.
+ * @property {number[]} norms Length of every vector before it was scaled.
  * @property {number} loadMs From creating the pipeline to ready, starting with an empty store.
  * @property {number[]} timesMs Time of every call; the first one includes warm-up.
  * @property {string} device What did the computing: "wasm" or "webgpu".
@@ -96,7 +110,7 @@ async function deviceInfo() {
 }
 
 /**
- * Loads a model from this server and turns every input into a vector.
+ * Loads a model from this server and turns every input into a vector of unit length.
  * @param {EmbedJob} job
  * @returns {Promise<EmbedResult>}
  */
@@ -104,6 +118,10 @@ async function embed(job) {
   if (job.inputs.length === 0) {
     throw new Error('The job has no inputs.');
   }
+  if (!POOLINGS.includes(job.pooling)) {
+    throw new Error(`Unknown pooling ${JSON.stringify(job.pooling)}; expected ${POOLINGS.join(', ')}.`);
+  }
+  const prefix = job.prefix ?? '';
   const { env, pipeline } = await import(job.engine.library);
 
   // Every file comes from this server: nothing from Hugging Face or a CDN.
@@ -115,12 +133,17 @@ async function embed(job) {
   // Empty the library's store, so that what follows is a first load.
   await caches.delete(env.cacheKey);
 
-  report(`loading ${job.model} (${job.dtype}, ${job.device})`);
+  report(`loading ${job.model} (${job.dtype}, ${job.device}, pooling ${job.pooling})`);
   const loadStart = performance.now();
-  const extractor = await pipeline('feature-extraction', job.model, {
-    dtype: job.dtype,
-    device: job.device,
-  });
+  /** @type {Record<string, unknown>} */
+  const options = { dtype: job.dtype, device: job.device };
+  if (job.modelFileName) {
+    options.model_file_name = job.modelFileName;
+  }
+  if ((job.externalData ?? 0) > 0) {
+    options.use_external_data_format = job.externalData;
+  }
+  const extractor = await pipeline('feature-extraction', job.model, options);
   const loadMs = performance.now() - loadStart;
 
   report(`computing ${job.inputs.length} vectors`);
@@ -128,11 +151,18 @@ async function embed(job) {
   const timesMs = [];
   /** @type {Float32Array[]} */
   const rows = [];
-  for (const text of job.inputs) {
+  /** @type {number[]} */
+  const norms = [];
+  for (const input of job.inputs) {
     const start = performance.now();
-    const output = await extractor(text, { pooling: 'mean', normalize: true });
+    const vector = await toVector(extractor, prefix + input, job.pooling);
+    const norm = scaleToUnit(vector);
     timesMs.push(performance.now() - start);
-    rows.push(Float32Array.from(output.data));
+    if (rows.length > 0 && vector.length !== rows[0].length) {
+      throw new Error(`Vector ${rows.length} has ${vector.length} numbers, the first one ${rows[0].length}.`);
+    }
+    rows.push(vector);
+    norms.push(norm);
   }
 
   const dims = rows[0].length;
@@ -147,6 +177,7 @@ async function embed(job) {
     dims,
     // Playwright returns only what converts to JSON, hence base64.
     vectors: toBase64(new Uint8Array(vectors.buffer)),
+    norms,
     loadMs,
     timesMs,
     device: job.device,
@@ -155,6 +186,53 @@ async function embed(job) {
     cached,
     library: env.version,
   };
+}
+
+/**
+ * One text to one vector, not yet scaled.
+ * @param {any} extractor A "feature-extraction" pipeline.
+ * @param {string} text Input with the prefix already in front.
+ * @param {string} pooling
+ * @returns {Promise<Float32Array>}
+ */
+async function toVector(extractor, text, pooling) {
+  if (pooling !== 'none') {
+    const output = await extractor(text, { pooling, normalize: false });
+    return Float32Array.from(output.data);
+  }
+  // The pipeline would return the token vectors (last_hidden_state) here. Models
+  // that pool inside the graph give the finished vector as a separate output, so
+  // the tokenizer and the model are called directly, with the pipeline's options.
+  const inputs = extractor.tokenizer(text, { padding: true, truncation: true });
+  const outputs = await extractor.model(inputs);
+  const vector = outputs.sentence_embedding;
+  if (!vector) {
+    throw new Error(`pooling "none" needs a sentence_embedding output; the model has ${Object.keys(outputs).join(', ')}.`);
+  }
+  if (vector.dims.length !== 2 || vector.dims[0] !== 1) {
+    throw new Error(`sentence_embedding has shape [${vector.dims.join(', ')}], expected [1, size].`);
+  }
+  return Float32Array.from(vector.data);
+}
+
+/**
+ * Scales a vector to unit length in place and returns its length before that.
+ * @param {Float32Array} vector
+ * @returns {number}
+ */
+function scaleToUnit(vector) {
+  let sum = 0;
+  for (const value of vector) {
+    sum += value * value;
+  }
+  const norm = Math.sqrt(sum);
+  if (!(norm > 0) || !Number.isFinite(norm)) {
+    throw new Error(`The model returned a vector of length ${norm}.`);
+  }
+  for (let index = 0; index < vector.length; index += 1) {
+    vector[index] /= norm;
+  }
+  return norm;
 }
 
 /**

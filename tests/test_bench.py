@@ -1,4 +1,5 @@
-"""Bench logic that needs no browser: when Chrome gets a window, decoding vectors."""
+"""Bench logic that needs no browser: jobs from the catalog, when Chrome gets a window,
+decoding vectors."""
 
 from __future__ import annotations
 
@@ -7,8 +8,17 @@ import base64
 import numpy as np
 import pytest
 
-from cifarium import vendor
-from cifarium.bench import decode_vectors, engine_urls, has_real_gpu, start_chrome
+from cifarium import catalog, vendor
+from cifarium.bench import (
+    DTYPE_SUFFIXES,
+    decode_vectors,
+    embed_job,
+    engine_urls,
+    external_data_files,
+    graph_name,
+    has_real_gpu,
+    start_chrome,
+)
 
 INTEL = {"webgpu": {"vendor": "intel", "isFallbackAdapter": False}}
 SOFTWARE = {"webgpu": {"vendor": "google", "isFallbackAdapter": True}}
@@ -49,6 +59,88 @@ def test_vectors_are_decoded_as_little_endian_float32_rows():
     assert vectors.shape == (2, 3)
     assert vectors.dtype == np.float32
     assert np.array_equal(vectors, rows)
+
+
+def _entry(entry_id: str) -> catalog.Entry:
+    return catalog.read_entry(catalog.CATALOG_DIR / f"{entry_id}.yaml")
+
+
+def _centroid_recipe(entry: catalog.Entry) -> catalog.Recipe:
+    return next(recipe for recipe in entry.recipes if recipe.kind == "embed-centroid")
+
+
+def test_a_job_takes_pooling_and_prefix_from_the_recipe():
+    entry = _entry("multilingual-e5-small")
+    job = embed_job(entry, _centroid_recipe(entry), ("Где моя посылка?",))
+    assert job == {
+        "model": "Xenova/multilingual-e5-small",
+        "dtype": "q8",
+        "device": "wasm",
+        "inputs": ["Где моя посылка?"],
+        "pooling": "mean",
+        "prefix": "query: ",
+        "modelFileName": "model",
+        "externalData": 0,
+    }
+
+
+def test_a_job_counts_the_external_data_files_of_the_variant():
+    entry = _entry("embeddinggemma-300m")
+    job = embed_job(entry, _centroid_recipe(entry), ["a"])
+    assert (job["pooling"], job["prefix"], job["externalData"]) == (
+        "none", "task: classification | query: ", 1)
+    assert job["dtype"] == "q4"
+
+
+def test_every_vector_recipe_in_the_catalog_makes_a_job():
+    for candidate in catalog.candidates("classify"):
+        if candidate.recipe.kind == "embed-centroid":
+            job = embed_job(candidate.entry, candidate.recipe, ["a"])
+            assert job["pooling"] in ("mean", "cls", "none")
+
+
+def test_a_zero_shot_recipe_makes_no_vector_job():
+    entry = _entry("mobilebert-uncased-mnli")
+    with pytest.raises(ValueError, match="does not turn text into vectors"):
+        embed_job(entry, entry.recipes[0], ["a"])
+
+
+@pytest.mark.parametrize(
+    ("graph", "dtype", "name"),
+    [
+        ("onnx/model_quantized.onnx", "q8", "model"),
+        ("onnx/model_q4.onnx", "q4", "model"),
+        ("onnx/model_no_gather_q4.onnx", "q4", "model_no_gather"),
+        ("onnx/model.onnx", "fp32", "model"),
+    ],
+)
+def test_the_graph_name_is_the_file_without_the_dtype_suffix(graph, dtype, name):
+    assert graph_name(["tokenizer.json", graph, graph + "_data"], dtype) == name
+
+
+@pytest.mark.parametrize(
+    ("files", "dtype"),
+    [
+        (["onnx/model_q4.onnx"], "q8"),
+        (["model_quantized.onnx"], "q8"),
+        (["onnx/_quantized.onnx"], "q8"),
+        (["onnx/model_q4.onnx", "onnx/model_quantized.onnx"], "q8"),
+        (["onnx/model_q4.onnx_data"], "q4"),
+    ],
+)
+def test_a_graph_the_library_would_not_load_is_refused(files, dtype):
+    with pytest.raises(ValueError):
+        graph_name(files, dtype)
+
+
+def test_every_catalog_dtype_has_a_suffix():
+    assert set(DTYPE_SUFFIXES) == set(catalog.DTYPES)
+
+
+def test_external_data_files_are_the_onnx_data_parts():
+    files = ["config.json", "onnx/model.onnx", "onnx/model.onnx_data", "onnx/model.onnx_data_1",
+             "onnx/model.onnx_database"]
+    assert external_data_files(files) == 2
 
 
 def test_engine_urls_point_into_the_vendor_folder():

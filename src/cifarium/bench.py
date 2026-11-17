@@ -12,8 +12,9 @@ Python and the page talk through ``window.cifariumBench`` (see web/bench/bench.j
 from __future__ import annotations
 
 import base64
+import re
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,10 +25,18 @@ from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwrigh
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from . import paths, vendor
+from . import catalog, paths, vendor
 from .server import BenchServer
 
 READY_TIMEOUT_MS = 30_000
+
+_EXTERNAL_DATA = re.compile(r"\.onnx_data(_\d+)?$")
+
+# What Transformers.js 4.3.2 adds to the graph name for each dtype of the catalog.
+DTYPE_SUFFIXES = {
+    "fp32": "", "fp16": "_fp16", "q8": "_quantized", "int8": "_int8", "uint8": "_uint8",
+    "q4": "_q4", "q4f16": "_q4f16", "bnb4": "_bnb4",
+}
 
 
 class BenchError(RuntimeError):
@@ -54,8 +63,10 @@ class Bench:
     ) -> dict[str, Any]:
         """Run one job in a new tab and return what the page computed.
 
-        ``job`` holds ``model``, ``dtype``, ``device`` and ``inputs``; the
-        addresses of the engine and of the models folder are filled in here.
+        ``job`` holds ``model``, ``dtype``, ``device``, ``inputs``, ``pooling``,
+        ``prefix``, ``modelFileName`` and ``externalData`` (``EmbedJob`` in bench.js; :func:`embed_job`
+        makes one from the catalog); the addresses of the engine and of the
+        models folder are filled in here.
         The page's console messages and errors come back under ``events``.
         A new tab per job means that closing it frees the model's memory.
         """
@@ -86,6 +97,53 @@ class Bench:
         if "error" in outcome:
             raise BenchError(f"The job failed in the browser: {outcome['error']}" + _recent(events))
         return {**outcome["result"], "events": events}
+
+
+def embed_job(
+    entry: catalog.Entry, recipe: catalog.Recipe, inputs: Sequence[str], variant: str = "cpu"
+) -> dict[str, Any]:
+    """The bench job that turns ``inputs`` into vectors the way ``recipe`` says.
+
+    Pooling and prefix come from the recipe and are applied by the page, so the
+    numbers match what the site will compute. The graph the library loads and
+    the number of its ``.onnx_data`` files come from the files the catalog
+    lists for the variant, not from the library's defaults.
+    """
+    if recipe.kind != "embed-centroid":
+        raise ValueError(f"{entry.id}: recipe {recipe.kind} does not turn text into vectors")
+    chosen = entry.variants[variant]
+    return {
+        "model": entry.repo,
+        "dtype": chosen.dtype,
+        "device": chosen.device,
+        "inputs": list(inputs),
+        "pooling": recipe.params["pooling"],
+        "prefix": recipe.params["prefix"],
+        "modelFileName": graph_name(chosen.files, chosen.dtype),
+        "externalData": external_data_files(chosen.files),
+    }
+
+
+def graph_name(files: Iterable[str], dtype: str) -> str:
+    """The ``model_file_name`` that makes the library load the one graph among ``files``.
+
+    The library looks in ``onnx/`` and adds the dtype's suffix itself, so
+    ``onnx/model_no_gather_q4.onnx`` at q4 is ``model_no_gather``.
+    """
+    graphs = [name for name in files if name.endswith(".onnx")]
+    if len(graphs) != 1:
+        raise ValueError(f"expected one .onnx graph, got {graphs}")
+    folder, _, base = graphs[0].rpartition("/")
+    stem, suffix = base[: -len(".onnx")], DTYPE_SUFFIXES[dtype]
+    if folder != "onnx" or not stem.endswith(suffix) or stem == suffix:
+        raise ValueError(f"the library cannot load {graphs[0]} at {dtype}: it looks for "
+                         f"onnx/<name>{suffix}.onnx")
+    return stem[: len(stem) - len(suffix)]
+
+
+def external_data_files(files: Iterable[str]) -> int:
+    """How many of ``files`` hold a graph's weights outside it (``.onnx_data``, ``.onnx_data_1``...)."""
+    return sum(1 for name in files if _EXTERNAL_DATA.search(name))
 
 
 def engine_urls() -> dict[str, str]:
