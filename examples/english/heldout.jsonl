@@ -1,0 +1,100 @@
+{"input": "Why can't my transfer complete?", "expected": "transfers", "source": "banking77/failed_transfer"}
+{"input": "The ATM at Metro bank on High St. Kensington didn't return my card. What should I do now that the bank is closed?", "expected": "card_security", "source": "banking77/card_swallowed"}
+{"input": "Can I change my PIN in Austria?", "expected": "card_security", "source": "banking77/change_pin"}
+{"input": "The transactions showing up are strange, I think my card was used without me knowing.", "expected": "card_security", "source": "banking77/compromised_card"}
+{"input": "Where can I get my card PIN?", "expected": "new_card", "source": "banking77/get_physical_card"}
+{"input": "What is the highest amount of top ups I'm allowed?", "expected": "top_up", "source": "banking77/top_up_limits"}
+{"input": "How fast can you fix an error in payment? I made a payment in the wrong account yesterday and it needs to be adjusted by tomorrow for my rent.", "expected": "transfers", "source": "banking77/cancel_transfer"}
+{"input": "Top up keeps failing", "expected": "top_up", "source": "banking77/top_up_failed"}
+{"input": "Is there any way to cancel a recent transfer? I did not mean to make it and need to make sure it does not go through.", "expected": "transfers", "source": "banking77/cancel_transfer"}
+{"input": "Am I able to track a card that has already been sent?", "expected": "new_card", "source": "banking77/card_arrival"}
+{"input": "I need to track the card sent to me.", "expected": "new_card", "source": "banking77/card_arrival"}
+{"input": "In regards to the PIN of the card?", "expected": "new_card", "source": "banking77/get_physical_card"}
+{"input": "When will my money be in my account?", "expected": "transfers", "source": "banking77/transfer_timing"}
+{"input": "I was removing a dollar amount from my account and now don't have access to my card.", "expected": "card_security", "source": "banking77/card_swallowed"}
+{"input": "How do I get started when I get my card?", "expected": "new_card", "source": "banking77/get_physical_card"}
+{"input": "When are cards shipped?", "expected": "new_card", "source": "banking77/card_delivery_estimate"}
+{"input": "How do I reset my PIN, I can't seem to use my card?", "expected": "card_security", "source": "banking77/pin_blocked"}
+{"input": "The ATM kept my card?", "expected": "card_security", "source": "banking77/card_swallowed"}
+{"input": "My top-up was reverted by the app.", "expected": "top_up", "source": "banking77/top_up_reverted"}
+{"input": "What is the reason that my top-up is still pending?", "expected": "top_up", "source": "banking77/pending_top_up"}
+{"input": "I topped up but it didn't complete", "expected": "top_up", "source": "banking77/pending_top_up"}
+{"input": "Why hasn't my in country transfer gone through yet? I confirmed the account info a couple days ago but the payment hasn't been posted yet.", "expected": "transfers", "source": "banking77/transfer_not_received_by_recipient"}
+{"input": "I didn't get a PIN yet. What gives?", "expected": "new_card", "source": "banking77/get_physical_card"}
+{"input": "My card has not been delivered yet and its been a week since I ordered it, please help", "expected": "new_card", "source": "banking77/card_arrival"}
+{"input": "I need information explaining why my top-up failed to go through", "expected": "top_up", "source": "banking77/top_up_failed"}
+{"input": "I am waiting for the money to enter my account. How long does it take?", "expected": "transfers", "source": "banking77/transfer_timing"}
+{"input": "My card is missing.", "expected": "card_security", "source": "banking77/lost_or_stolen_card"}
+{"input": "I want to reverse my transaction from earlier", "expected": "transfers", "source": "banking77/cancel_transfer"}
+{"input": "I believe my top up did not work.", "expected": "top_up", "source": "banking77/top_up_failed"}
+{"input": "I couldn't make a transfer", "expected": "transfers", "source": "banking77/failed_transfer"}
+{"input": "Show me where to order my card.", "expected": "new_card", "source": "banking77/order_physical_card"}
+{"input": "What should I do if I lost my card?", "expected": "card_security", "source": "banking77/lost_or_stolen_card"}
+{"input": "I transferred a payment a couple days ago and it shows done, but it has not been received. Could you please help me?", "expected": "transfers", "source": "banking77/transfer_not_received_by_recipient"}
+{"input": "My card was taken by the ATM.", "expected": "card_security", "source": "banking77/card_swallowed"}
+{"input": "I tried activating my plug-in and it didn't piece of work", "expected": "new_card", "source": "banking77/activate_my_card"}
+{"input": "For what reason would a top up be reverted and returned to my account?", "expected": "top_up", "source": "banking77/top_up_reverted"}
+{"input": "Where is my pin? I don't have it yet", "expected": "new_card", "source": "banking77/get_physical_card"}
+{"input": "How do I unblock my pin after entering it wrong too many times?", "expected": "card_security", "source": "banking77/pin_blocked"}
+{"input": "Where do you deliver cards to?", "expected": "new_card", "source": "banking77/order_physical_card"}
+{"input": "I want to change my PIN - do I need to be in a bank?", "expected": "card_security", "source": "banking77/change_pin"}
+{"input": "What do I have to do to change my pin?", "expected": "card_security", "source": "banking77/change_pin"}
+{"input": "I just got a new card, and I want to know how to activate.", "expected": "new_card", "source": "banking77/activate_my_card"}
+{"input": "card is lost, please help", "expected": "card_security", "source": "banking77/lost_or_stolen_card"}
+{"input": "How long do you expect me to wait for the transfer? It finally worked out, but has been pending for a long time and it's quite urgent.", "expected": "transfers", "source": "banking77/pending_transfer"}
+{"input": "I recently purchased something and the seller says my money has not arrived yet. It was in EU's. How long does this take?", "expected": "transfers", "source": "banking77/pending_transfer"}
+{"input": "I made a mistake and need to cancel a transaction", "expected": "transfers", "source": "banking77/cancel_transfer"}
+{"input": "Can I cancel a transaction?", "expected": "transfers", "source": "banking77/cancel_transfer"}
+{"input": "Why is my top up still pending?", "expected": "top_up", "source": "banking77/pending_top_up"}
+{"input": "Does the card you sent have a tracking number?", "expected": "new_card", "source": "banking77/card_arrival"}
+{"input": "I mistook my pin and now I am locked. Can you unlock me?", "expected": "card_security", "source": "banking77/pin_blocked"}
+{"input": "Can I change my PIN online?", "expected": "card_security", "source": "banking77/change_pin"}
+{"input": "Can I change my pin through the app?", "expected": "card_security", "source": "banking77/change_pin"}
+{"input": "My card keeps getting declined when I try to use it. I would like to top-up, but it is not going though.", "expected": "top_up", "source": "banking77/top_up_failed"}
+{"input": "How do I report fraud on my card?", "expected": "card_security", "source": "banking77/compromised_card"}
+{"input": "I'm still waiting for the top-up!", "expected": "top_up", "source": "banking77/pending_top_up"}
+{"input": "What is the max amount of top-ups?", "expected": "top_up", "source": "banking77/top_up_limits"}
+{"input": "my card details could be stolen, as i didnt make these transactions", "expected": "card_security", "source": "banking77/compromised_card"}
+{"input": "What is the significance of verifying the top-up?", "expected": "top_up", "source": "banking77/verify_top_up"}
+{"input": "My transfer keeps failing and I just want to transfer the money can you please make it work?", "expected": "transfers", "source": "banking77/failed_transfer"}
+{"input": "Will my card be here soon?", "expected": "new_card", "source": "banking77/card_delivery_estimate"}
+{"input": "How do i receive a physical card?", "expected": "new_card", "source": "banking77/order_physical_card"}
+{"input": "Why would my top up be reverted?", "expected": "top_up", "source": "banking77/top_up_reverted"}
+{"input": "What is the verification process for my card?", "expected": "top_up", "source": "banking77/verify_top_up"}
+{"input": "How long will this take to get to me?", "expected": "new_card", "source": "banking77/card_delivery_estimate"}
+{"input": "When will my card be here?", "expected": "new_card", "source": "banking77/card_delivery_estimate"}
+{"input": "I tried activating my bill of fare and it didn't workplace", "expected": "new_card", "source": "banking77/activate_my_card"}
+{"input": "How can I tell what the limit is to top-ups?", "expected": "top_up", "source": "banking77/top_up_limits"}
+{"input": "Why does it say my transfer failed?", "expected": "transfers", "source": "banking77/failed_transfer"}
+{"input": "What is the process for unlocking the pin?", "expected": "card_security", "source": "banking77/pin_blocked"}
+{"input": "Can I request a physical card?", "expected": "new_card", "source": "banking77/order_physical_card"}
+{"input": "I cannot get my card out of the ATM.", "expected": "card_security", "source": "banking77/card_swallowed"}
+{"input": "Hello, I have tried using crypto top up but it is not working. I had some money in my account but I'm not sure what happened", "expected": "top_up", "source": "banking77/top_up_reverted"}
+{"input": "My transfer says pending. What does that mean?", "expected": "transfers", "source": "banking77/pending_transfer"}
+{"input": "Can the card was sen to me be tracked?", "expected": "new_card", "source": "banking77/card_arrival"}
+{"input": "What's up with verifying top-ups?", "expected": "top_up", "source": "banking77/verify_top_up"}
+{"input": "I need you to stop the transfer I just started as soon as possible, I just realized it's not correct!", "expected": "transfers", "source": "banking77/cancel_transfer"}
+{"input": "Will there be a fee to receive a physical card?", "expected": "new_card", "source": "banking77/order_physical_card"}
+{"input": "How long will it take for the card to arrive?", "expected": "new_card", "source": "banking77/card_delivery_estimate"}
+{"input": "The card PIN?", "expected": "new_card", "source": "banking77/get_physical_card"}
+{"input": "I completed an in country transfer a few days ago and was sure to check the account information several times since the transaction was completed, but the funds are still not available. What is the problem?", "expected": "transfers", "source": "banking77/transfer_not_received_by_recipient"}
+{"input": "Why hasn't my transaction completed?", "expected": "transfers", "source": "banking77/transfer_not_received_by_recipient"}
+{"input": "Will my transfer immediately show up in my account?", "expected": "transfers", "source": "banking77/transfer_timing"}
+{"input": "I just got my new card. How can I activate it?", "expected": "new_card", "source": "banking77/activate_my_card"}
+{"input": "I am having trouble finding the top-up card verification code.", "expected": "top_up", "source": "banking77/verify_top_up"}
+{"input": "need to know if there is a maximum i can top up", "expected": "top_up", "source": "banking77/top_up_limits"}
+{"input": "I tried entering my pin several times incorrectly. Why isn't my pin working?", "expected": "card_security", "source": "banking77/pin_blocked"}
+{"input": "Do I need to use a limit on top-ups?", "expected": "top_up", "source": "banking77/top_up_limits"}
+{"input": "Is a copy of the police report necessary for completing the report process?", "expected": "card_security", "source": "banking77/lost_or_stolen_card"}
+{"input": "I need some help, I thought you guys accepted crypto top ups?? It won't seem to let me do it. I put money in my account and now it's gone and I didn't spend it. Where did it go??", "expected": "top_up", "source": "banking77/top_up_reverted"}
+{"input": "It looks like my top up didn't work. Why?", "expected": "top_up", "source": "banking77/top_up_failed"}
+{"input": "limits on top ups", "expected": "top_up", "source": "banking77/top_up_limits"}
+{"input": "Its been 3 days, How long will my transfer take to get to my wallet?", "expected": "transfers", "source": "banking77/transfer_timing"}
+{"input": "i put in money for vacation and its not showing. i need that money today, how long will it take", "expected": "transfers", "source": "banking77/pending_transfer"}
+{"input": "i dont recognise some of these transactions, i think someone has my card details", "expected": "card_security", "source": "banking77/compromised_card"}
+{"input": "Did I do something incorrectly? Where is my top-up?", "expected": "top_up", "source": "banking77/pending_top_up"}
+{"input": "What is the time period for money to be transferred?", "expected": "transfers", "source": "banking77/transfer_timing"}
+{"input": "I sent some money to somebody a couple of hours ago, and they still have yet to receive it. They really need the money, how much longer are they going to have to wait?", "expected": "transfers", "source": "banking77/transfer_not_received_by_recipient"}
+{"input": "I cant find my card.", "expected": "card_security", "source": "banking77/lost_or_stolen_card"}
+{"input": "Why couldn't I complete a transfer?", "expected": "transfers", "source": "banking77/failed_transfer"}
+{"input": "How might I change my PIN?", "expected": "card_security", "source": "banking77/change_pin"}

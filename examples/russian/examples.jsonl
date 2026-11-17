@@ -1,0 +1,20 @@
+{"input": "разбуди меня в шесть утра", "expected": "будильник", "source": "massive/ru-RU/alarm_set/1773"}
+{"input": "сколько писем я получила со вчерашнего дня", "expected": "почта", "source": "massive/ru-RU/email_query/16261"}
+{"input": "проверь мой последний пост в instagram", "expected": "соцсети", "source": "massive/ru-RU/social_query/15189"}
+{"input": "я свободен в пять вечера в воскресенье", "expected": "календарь", "source": "massive/ru-RU/calendar_query/7744"}
+{"input": "твитни мою жалобу на обслуживание клиентов в магните", "expected": "соцсети", "source": "massive/ru-RU/social_post/15446"}
+{"input": "внеси в расписание моё мероприятие с человеком по времени и месту", "expected": "календарь", "source": "massive/ru-RU/calendar_set/7334"}
+{"input": "что новенького у меня в facebook", "expected": "соцсети", "source": "massive/ru-RU/social_query/15285"}
+{"input": "какие электронные письма я получил вчера", "expected": "почта", "source": "massive/ru-RU/email_query/16926"}
+{"input": "найди мне кого нибудь", "expected": "почта", "source": "massive/ru-RU/email_querycontact/16531"}
+{"input": "обнови мой календарь и удали следующее мероприятие", "expected": "календарь", "source": "massive/ru-RU/calendar_remove/8010"}
+{"input": "удали день отца из календаря", "expected": "календарь", "source": "massive/ru-RU/calendar_remove/7023"}
+{"input": "поищи мои новые письма во входящих", "expected": "почта", "source": "massive/ru-RU/email_query/15882"}
+{"input": "какие посты я пропустил от своих друзей", "expected": "соцсети", "source": "massive/ru-RU/social_query/15330"}
+{"input": "удали все будильники на воскресенье", "expected": "будильник", "source": "massive/ru-RU/alarm_remove/5399"}
+{"input": "проверь пришел имейл от насти", "expected": "почта", "source": "massive/ru-RU/email_query/15999"}
+{"input": "прочитать последнее напоминание", "expected": "календарь", "source": "massive/ru-RU/calendar_query/6749"}
+{"input": "выключи все будильники которые заведены", "expected": "будильник", "source": "massive/ru-RU/alarm_remove/5675"}
+{"input": "включи будильник", "expected": "будильник", "source": "massive/ru-RU/alarm_set/1132"}
+{"input": "убрать будильник если есть", "expected": "будильник", "source": "massive/ru-RU/alarm_remove/5115"}
+{"input": "твитни жалобу в ростелеком", "expected": "соцсети", "source": "massive/ru-RU/social_post/15727"}

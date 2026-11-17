@@ -1,0 +1,100 @@
+{"input": "проверь мой календарь для меня", "expected": "календарь", "source": "massive/ru-RU/calendar_query/8561"}
+{"input": "отмени встречу в четверг на следующей неделе в два часа дня", "expected": "календарь", "source": "massive/ru-RU/calendar_remove/6882"}
+{"input": "твитнуть жалобу", "expected": "соцсети", "source": "massive/ru-RU/social_post/15649"}
+{"input": "обновить профиль в twitter", "expected": "соцсети", "source": "massive/ru-RU/social_post/15335"}
+{"input": "добавь имейл в контакты", "expected": "почта", "source": "massive/ru-RU/email_addcontact/15937"}
+{"input": "добавь наталью зотову в список моих любимых контактов", "expected": "почта", "source": "massive/ru-RU/email_querycontact/15976"}
+{"input": "отошли электронное письмо с поздравлением с днём рождения моему начальнику", "expected": "почта", "source": "massive/ru-RU/email_sendemail/16287"}
+{"input": "olly покажи мне мои будильники", "expected": "будильник", "source": "massive/ru-RU/alarm_query/1634"}
+{"input": "я хочу отправить твит в перекресток", "expected": "соцсети", "source": "massive/ru-RU/social_post/15434"}
+{"input": "эй olly запости мою жалобу на майкрософт в twitter", "expected": "соцсети", "source": "massive/ru-RU/social_post/15420"}
+{"input": "назначь регулярные встречи раз в две недели по пятницам в три часа дня", "expected": "календарь", "source": "massive/ru-RU/calendar_set/6742"}
+{"input": "когда день рождения у марии с.", "expected": "почта", "source": "massive/ru-RU/email_querycontact/16218"}
+{"input": "у меня есть какие либо встречи завтра", "expected": "календарь", "source": "massive/ru-RU/calendar_query/6839"}
+{"input": "пожалуйста добавь адрес для ивана петрова в список контактов как johndoe собака yahoo точка com", "expected": "почта", "source": "massive/ru-RU/email_addcontact/16847"}
+{"input": "какие будильники ты установил", "expected": "будильник", "source": "massive/ru-RU/alarm_query/5334"}
+{"input": "кто написал мне или упомянул меня в соцсетях", "expected": "соцсети", "source": "massive/ru-RU/social_query/15650"}
+{"input": "удали то что я должен сделать двадцать третьего марта", "expected": "календарь", "source": "massive/ru-RU/calendar_remove/8288"}
+{"input": "удалить запланированный будильник", "expected": "будильник", "source": "massive/ru-RU/alarm_remove/2984"}
+{"input": "посмотри для меня будильники которые установил сегодня утром", "expected": "будильник", "source": "massive/ru-RU/alarm_query/5618"}
+{"input": "у меня запись к врачу на два часа дня сегодня", "expected": "календарь", "source": "massive/ru-RU/calendar_query/6658"}
+{"input": "что у меня сегодня", "expected": "календарь", "source": "massive/ru-RU/calendar_query/7823"}
+{"input": "есть что-нибудь новое в снэпчате", "expected": "соцсети", "source": "massive/ru-RU/social_query/15169"}
+{"input": "алиса трендовые социальные медиа", "expected": "соцсети", "source": "massive/ru-RU/social_query/15300"}
+{"input": "пожалуйста создай новую контактную информацию об ольге", "expected": "почта", "source": "massive/ru-RU/email_addcontact/16522"}
+{"input": "пожалуйста установи напоминание на вторник в девять утра", "expected": "календарь", "source": "massive/ru-RU/calendar_set/8660"}
+{"input": "ответь ивану что я посещу вечеринку", "expected": "почта", "source": "massive/ru-RU/email_sendemail/16058"}
+{"input": "пусть магнит знает что я их ненавижу", "expected": "соцсети", "source": "massive/ru-RU/social_post/15566"}
+{"input": "сколько всего лайков я получил сегодня", "expected": "соцсети", "source": "massive/ru-RU/social_query/15163"}
+{"input": "установлен ли будильник на завтрашнее утро", "expected": "будильник", "source": "massive/ru-RU/alarm_query/1605"}
+{"input": "открой письмо для нового контакта", "expected": "почта", "source": "massive/ru-RU/email_sendemail/17129"}
+{"input": "покажи мне последние электронные письма", "expected": "почта", "source": "massive/ru-RU/email_query/16339"}
+{"input": "опубликовать в facebook событие мой день рождения", "expected": "соцсети", "source": "massive/ru-RU/social_post/15196"}
+{"input": "какая история самая популярная в моей новостной ленте facebook", "expected": "соцсети", "source": "massive/ru-RU/social_query/15424"}
+{"input": "отправь твит об amazon что мои заказы никогда не доставляются вовремя", "expected": "соцсети", "source": "massive/ru-RU/social_post/15638"}
+{"input": "отключи три моих будильника на три часа дня", "expected": "будильник", "source": "massive/ru-RU/alarm_remove/1206"}
+{"input": "отправить твит о моей жалобе о моем грузовик в потребительский дайджест", "expected": "соцсети", "source": "massive/ru-RU/social_post/15431"}
+{"input": "olly выключи мои будильники для йоги", "expected": "будильник", "source": "massive/ru-RU/alarm_remove/5101"}
+{"input": "какие контактные данные у ивана", "expected": "почта", "source": "massive/ru-RU/email_querycontact/16778"}
+{"input": "не дай мне забыть о записи пирата к ветеринару двадцать пятого", "expected": "календарь", "source": "massive/ru-RU/calendar_set/7198"}
+{"input": "проверить мой почтовый ящик на наличие новых электронных писем", "expected": "почта", "source": "massive/ru-RU/email_query/16718"}
+{"input": "пожалуйста список активных будильников", "expected": "будильник", "source": "massive/ru-RU/alarm_query/62"}
+{"input": "какой адрес электронной почты у евгения", "expected": "почта", "source": "massive/ru-RU/email_querycontact/16953"}
+{"input": "добавь новый адрес в список контактов", "expected": "почта", "source": "massive/ru-RU/email_addcontact/15895"}
+{"input": "твитни мою жалобу в яндекс маркет", "expected": "соцсети", "source": "massive/ru-RU/social_post/15660"}
+{"input": "покажи мне будильники которые я установил", "expected": "будильник", "source": "massive/ru-RU/alarm_query/203"}
+{"input": "какие последние новости на лента ру", "expected": "соцсети", "source": "massive/ru-RU/social_query/15179"}
+{"input": "отправь жалобу в sony об этом телевизоре который перестал работать", "expected": "соцсети", "source": "massive/ru-RU/social_post/15365"}
+{"input": "создай новый адрес электронной почты", "expected": "почта", "source": "massive/ru-RU/email_sendemail/16484"}
+{"input": "пожалуйста удали мой утренний будильник", "expected": "будильник", "source": "massive/ru-RU/alarm_remove/918"}
+{"input": "добавь встречу в этот четверг в календарь", "expected": "календарь", "source": "massive/ru-RU/calendar_set/7045"}
+{"input": "создай новый контакт с адресом из этого письма", "expected": "почта", "source": "massive/ru-RU/email_addcontact/15746"}
+{"input": "выключи все мои будильники", "expected": "будильник", "source": "massive/ru-RU/alarm_remove/3536"}
+{"input": "удали мою запись в час завтра", "expected": "календарь", "source": "massive/ru-RU/calendar_remove/8145"}
+{"input": "поставь напоминание для предстоящей встречи", "expected": "календарь", "source": "massive/ru-RU/calendar_set/7674"}
+{"input": "мне нужно добавить в календарь встречу с анной в понедельник в десять утра", "expected": "календарь", "source": "massive/ru-RU/calendar_set/7056"}
+{"input": "заведи будильник на завтрашнее утро на шесть утра", "expected": "будильник", "source": "massive/ru-RU/alarm_set/3219"}
+{"input": "обновления в социальных сетях", "expected": "соцсети", "source": "massive/ru-RU/social_query/15287"}
+{"input": "отправь и-мейл работнику компании про рабочий проект", "expected": "почта", "source": "massive/ru-RU/email_sendemail/16566"}
+{"input": "когда я встречусь с оксаной за обедом на этой неделе", "expected": "календарь", "source": "massive/ru-RU/calendar_query/9150"}
+{"input": "установить мой будильник на время", "expected": "будильник", "source": "massive/ru-RU/alarm_set/2505"}
+{"input": "какие будильники установлены сейчас", "expected": "будильник", "source": "massive/ru-RU/alarm_query/845"}
+{"input": "если время доставки моей посылки завтра можешь завести будильник через час после нее спасибо", "expected": "будильник", "source": "massive/ru-RU/alarm_set/3157"}
+{"input": "направь ответ ивану", "expected": "почта", "source": "massive/ru-RU/email_sendemail/16691"}
+{"input": "дима заходил сегодня в facebook", "expected": "соцсети", "source": "massive/ru-RU/social_query/15288"}
+{"input": "alexa найди информацию о борисе из моего списка контактов", "expected": "почта", "source": "massive/ru-RU/email_querycontact/16251"}
+{"input": "что я запланировал на следующую неделю", "expected": "календарь", "source": "massive/ru-RU/calendar_query/7336"}
+{"input": "дай знать постила ли анна что-нибудь у меня на facebook сегодня", "expected": "соцсети", "source": "massive/ru-RU/social_query/15175"}
+{"input": "соедини меня с электронной почтой дениса", "expected": "почта", "source": "massive/ru-RU/email_querycontact/16198"}
+{"input": "что все из моего скписка контактов в facebook смотрят игру", "expected": "соцсети", "source": "massive/ru-RU/social_query/15426"}
+{"input": "пожалуйста ответь моим коллегам на счет его запроса", "expected": "почта", "source": "massive/ru-RU/email_sendemail/15902"}
+{"input": "опубликовать статью в pinterest", "expected": "соцсети", "source": "massive/ru-RU/social_post/15220"}
+{"input": "пожалуйста запланируй встречу с олесей в десять утра первого апреля", "expected": "календарь", "source": "massive/ru-RU/calendar_set/8589"}
+{"input": "поставь будильник на десять утра завтра и пометь его как встреча", "expected": "будильник", "source": "massive/ru-RU/alarm_set/6855"}
+{"input": "покажи будильники", "expected": "будильник", "source": "massive/ru-RU/alarm_query/205"}
+{"input": "твитни службе поддержки клиентов икея следующее я не доволен этим новым продуктом klm", "expected": "соцсети", "source": "massive/ru-RU/social_post/15653"}
+{"input": "есть ли ужин ко дню рождения в календаре на пятницу", "expected": "календарь", "source": "massive/ru-RU/calendar_query/7497"}
+{"input": "во сколько можно прийти на вечеринку у саши", "expected": "календарь", "source": "massive/ru-RU/calendar_query/8987"}
+{"input": "пожалуйста разбуди меня в семь тридцать утра", "expected": "будильник", "source": "massive/ru-RU/alarm_set/5172"}
+{"input": "сбрось будильник", "expected": "будильник", "source": "massive/ru-RU/alarm_remove/3043"}
+{"input": "создай электронное письмо которое нужно отправить моей семье", "expected": "почта", "source": "massive/ru-RU/email_sendemail/16307"}
+{"input": "я хочу встать в шесть утра", "expected": "будильник", "source": "massive/ru-RU/alarm_set/5162"}
+{"input": "пожалуйста удали следующее событие день рождения", "expected": "календарь", "source": "massive/ru-RU/calendar_remove/7361"}
+{"input": "мне больше не нужен ежедневный будильник на пять вечера", "expected": "будильник", "source": "massive/ru-RU/alarm_remove/3830"}
+{"input": "вычеркни празднование дня рождения из календаря на май", "expected": "календарь", "source": "massive/ru-RU/calendar_remove/8285"}
+{"input": "перейди к году события и удали", "expected": "календарь", "source": "massive/ru-RU/calendar_remove/8816"}
+{"input": "удали все записи из календаря", "expected": "календарь", "source": "massive/ru-RU/calendar_remove/7649"}
+{"input": "информация facebook", "expected": "соцсети", "source": "massive/ru-RU/social_query/15644"}
+{"input": "поставь мой будильник на шесть утра", "expected": "будильник", "source": "massive/ru-RU/alarm_set/5474"}
+{"input": "удали все подробности из моего календаря", "expected": "календарь", "source": "massive/ru-RU/calendar_remove/8844"}
+{"input": "добавь даниил эт яндекс точка ру в мои контакты", "expected": "почта", "source": "massive/ru-RU/email_addcontact/16235"}
+{"input": "этот новый адрес ивана иванова ине надо добавить как ssmith собака yahoo точка com", "expected": "почта", "source": "massive/ru-RU/email_addcontact/15919"}
+{"input": "добавь событие", "expected": "календарь", "source": "massive/ru-RU/calendar_set/6999"}
+{"input": "твитни о том что можно для этого сделать", "expected": "соцсети", "source": "massive/ru-RU/social_post/15613"}
+{"input": "что случилось сегодня", "expected": "соцсети", "source": "massive/ru-RU/social_query/15224"}
+{"input": "напомни мне утром позвонить моей маме", "expected": "календарь", "source": "massive/ru-RU/calendar_set/8599"}
+{"input": "мой начальник присылал что нибудь", "expected": "почта", "source": "massive/ru-RU/email_query/16643"}
+{"input": "есть сообщения от жени", "expected": "почта", "source": "massive/ru-RU/email_query/16985"}
+{"input": "на какое время установлен мой будильник на завтрашнее утро", "expected": "будильник", "source": "massive/ru-RU/alarm_query/4079"}
+{"input": "установить будильник который прозвенит через сорок минут", "expected": "будильник", "source": "massive/ru-RU/alarm_set/94"}
+{"input": "у меня сейчас есть какие-нибудь установленные будильники", "expected": "будильник", "source": "massive/ru-RU/alarm_query/4128"}

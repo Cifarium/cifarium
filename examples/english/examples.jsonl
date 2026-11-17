@@ -1,0 +1,20 @@
+{"input": "Can I get some help activating my new card?", "expected": "new_card", "source": "banking77/activate_my_card"}
+{"input": "I have a transfer waiting.", "expected": "transfers", "source": "banking77/pending_transfer"}
+{"input": "Why verify the top-ups?", "expected": "top_up", "source": "banking77/verify_top_up"}
+{"input": "How do I stop fraud to my account?", "expected": "card_security", "source": "banking77/compromised_card"}
+{"input": "Why is my top-up still pending?", "expected": "top_up", "source": "banking77/pending_top_up"}
+{"input": "Is there a reason my transfer failed?", "expected": "transfers", "source": "banking77/failed_transfer"}
+{"input": "What are the steps to get my card back that was kept by the ATM?", "expected": "card_security", "source": "banking77/card_swallowed"}
+{"input": "Why did the app deny my top up?", "expected": "top_up", "source": "banking77/top_up_failed"}
+{"input": "What should I do if I think that someone might be using me card?", "expected": "card_security", "source": "banking77/compromised_card"}
+{"input": "I'm confused as to why my transfer is still listed as pending on the website.", "expected": "transfers", "source": "banking77/pending_transfer"}
+{"input": "Why did my money disappear when I topped up??", "expected": "top_up", "source": "banking77/top_up_reverted"}
+{"input": "Where are cards available to order?", "expected": "new_card", "source": "banking77/order_physical_card"}
+{"input": "How do I activate a new card?", "expected": "new_card", "source": "banking77/activate_my_card"}
+{"input": "How long do European transfers take?", "expected": "transfers", "source": "banking77/transfer_timing"}
+{"input": "I was blocked by using the wrong pin too many times, can you help me?", "expected": "card_security", "source": "banking77/pin_blocked"}
+{"input": "If I order a card when does it arrive?", "expected": "new_card", "source": "banking77/card_delivery_estimate"}
+{"input": "Can you freeze my card it was stolen", "expected": "card_security", "source": "banking77/lost_or_stolen_card"}
+{"input": "Is there a way to verify a card top-up?", "expected": "top_up", "source": "banking77/verify_top_up"}
+{"input": "I need to find out where the card is that I ordered.", "expected": "new_card", "source": "banking77/card_arrival"}
+{"input": "I made a transfer and they haven't received the money I sent them.", "expected": "transfers", "source": "banking77/transfer_not_received_by_recipient"}

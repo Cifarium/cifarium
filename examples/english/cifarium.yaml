@@ -1,0 +1,7 @@
+task: classify
+examples: examples.jsonl
+labels:
+  new_card: "ordering, delivery and activation of a new card"
+  card_security: "a lost, stolen, compromised or blocked card, and the PIN"
+  transfers: "a bank transfer that is late, failed, lost or to be cancelled"
+  top_up: "adding money to the account: failed, reverted, pending or limited top-ups"
