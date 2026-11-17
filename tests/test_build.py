@@ -11,13 +11,13 @@ import json
 import os
 import sys
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from cifarium import build, catalog, cli, hub, vendor
+from cifarium import build, bundle, catalog, cli, hub, vendor
 from cifarium.bench import BenchError
 from cifarium.build import LATENCY, Speed, choose
 from cifarium.config import Config, Label, Limits
@@ -199,6 +199,7 @@ class FakeChrome:
         self.ms = ms
         self.single_thread = single_thread
         self.ignores_threads = False
+        self.removed: tuple[str, ...] = ()
         self.jobs: list[dict] = []
 
     def run(self, job: dict, *, timeout: float) -> dict:
@@ -214,20 +215,39 @@ class FakeChrome:
                 "crossOriginIsolated": True, "events": []}
 
 
+@dataclass
+class Written:
+    """What the build asked :func:`bundle.write` to put into the folder."""
+
+    folder: Path
+    candidate: catalog.Candidate
+    names: list[str]
+    centres: np.ndarray
+
+
 @pytest.fixture
 def chrome(monkeypatch):
-    """Replace the engine download, the model download and Chrome; return the fake Chrome."""
+    """Replace the engine download, the model download, Chrome and the writing of the folder
+    (tests/test_bundle.py checks that); return the fake Chrome with what it was asked to do."""
     fake = FakeChrome()
     downloads: list[str] = []
+    written: list[Written] = []
 
     @contextmanager
     def fake_open_bench(*, headed: bool = False):
         yield fake
 
+    def fake_write(folder, candidate, names, centres, **kwargs):
+        written.append(Written(Path(folder), candidate, list(names), np.array(centres)))
+        return bundle.Built(Path(folder), {}, ("cifarium.json", "index.html"), fake.removed,
+                            first_load_bytes=51_200_000, size_bytes=52_000_000)
+
     monkeypatch.setattr(vendor, "ensure_engine", lambda **kwargs: None)
     monkeypatch.setattr(hub, "download_files", lambda repo, revision, files: downloads.append(repo))
     monkeypatch.setattr(build, "open_bench", fake_open_bench)
+    monkeypatch.setattr(bundle, "write", fake_write)
     fake.downloads = downloads
+    fake.written = written
     return fake
 
 
@@ -256,11 +276,72 @@ def test_run_prints_the_table_and_the_chosen_model(tmp_path, chrome, capsys):
     for candidate in catalog.candidates("classify"):
         assert candidate.entry.id in out
     assert "license gemma does not pass `license: commercial`" in out
-    # One run of the chosen model, one single-thread run on a few examples, nothing written.
+    # One run of the chosen model, one single-thread run on a few examples.
     assert chrome.downloads == ["Xenova/all-MiniLM-L6-v2"]
     assert [job.get("threads") for job in chrome.jobs] == [None, 1]
     assert len(chrome.jobs[1]["inputs"]) == build.SINGLE_THREAD_INPUTS
-    assert not (tmp_path / "cifarium-out").exists()
+
+
+def test_run_writes_the_folder_of_the_chosen_model_with_the_centres_of_its_labels(tmp_path, chrome, capsys):
+    code = build.run(write_task(tmp_path))
+
+    out, err = capsys.readouterr()
+    assert code == 0, err
+    [written] = chrome.written
+    assert written.folder.resolve() == (tmp_path / "cifarium-out").resolve()
+    assert written.candidate.entry.id == "all-minilm-l6-v2"
+    # The labels in the order of their first example; the fake page puts each topic on its own axis.
+    assert written.names == list(TOPICS)
+    assert np.allclose(written.centres, np.eye(3))
+    assert "Wrote " in out and "2 files, 52.0 MB on disk; a first visit downloads 51.2 MB" in out
+    assert "removed" not in out
+    assert "index.html is an example page and every build writes it again" in out
+    assert "python -m http.server 8000 --directory " in out and "http://localhost:8000/" in out
+    assert "sends no isolation headers" in out
+
+
+def test_run_writes_to_the_output_of_the_settings_and_says_what_it_removed(tmp_path, chrome, capsys):
+    chrome.removed = ("models/old/a", "models/old/b")
+
+    code = build.run(write_task(tmp_path, "output: ./public/ml\n"))
+
+    out, _ = capsys.readouterr()
+    assert code == 0
+    assert chrome.written[0].folder.resolve() == (tmp_path / "public" / "ml").resolve()
+    assert "removed 2 files of the previous build that this one does not use" in out
+
+
+def test_a_folder_that_cannot_be_written_ends_with_its_message_and_code_1(tmp_path, chrome, monkeypatch, capsys):
+    def fail(*args, **kwargs):
+        raise bundle.BundleError("cannot write the folder: Access is denied")
+
+    monkeypatch.setattr(bundle, "write", fail)
+
+    code = build.run(write_task(tmp_path))
+
+    out, err = capsys.readouterr()
+    assert code == 1
+    assert "FAILED: cannot write the folder: Access is denied" in err
+    assert "Traceback" not in err and "Wrote " not in out
+
+
+def test_host_hub_is_refused_before_the_bench_starts(tmp_path, chrome, capsys):
+    code = build.run(write_task(tmp_path, "host: hub\n"))
+
+    out, err = capsys.readouterr()
+    assert code == 1
+    assert "host: hub is not supported yet" in err and "host: bundle" in err
+    assert out == "" and chrome.jobs == [] and chrome.downloads == [] and chrome.written == []
+
+
+def test_the_folder_is_shown_as_the_user_can_type_it(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    assert build._shown(tmp_path / "out") == "out"
+    assert build._shown(tmp_path / "public" / "ml") == os.path.join("public", "ml")
+    assert build._shown(tmp_path) == str(tmp_path)
+    assert build._shown(tmp_path.parent / "elsewhere") == str(tmp_path.parent / "elsewhere")
+    assert build._quoted("my site") == '"my site"' and build._quoted("site") == "site"
 
 
 def test_a_miss_of_the_chosen_model_names_its_line_in_the_examples_file(tmp_path, chrome, capsys):
@@ -279,7 +360,7 @@ def test_run_goes_past_slow_models_and_fails_when_none_is_fast_enough(tmp_path, 
     out, err = capsys.readouterr()
     assert code == 1
     assert "FAILED: no model passed" in err
-    assert "Chosen" not in out
+    assert "Chosen" not in out and "Wrote " not in out and chrome.written == []
     # Every vector model of the catalog that the settings let through ran once and was too slow.
     ran = [job["model"] for job in chrome.jobs]
     assert len(ran) == len(set(ran)) > 1

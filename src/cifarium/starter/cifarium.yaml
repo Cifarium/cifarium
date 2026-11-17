@@ -28,7 +28,8 @@ limits:
 # Which models to try: commercial (the license allows commercial use) or any.
 license: commercial
 
-# Where the site loads the model from: bundle (the build folder) or hub (Hugging Face).
+# Where the site loads the model from: bundle (the build folder). The value hub, which
+# loads it from Hugging Face, is not supported yet.
 host: bundle
 
 # Build folder for your site.

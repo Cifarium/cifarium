@@ -1,10 +1,10 @@
-"""The runtime (web/runtime/) in the real Chrome, on a build folder this file puts together by hand.
+"""The runtime (web/runtime/) in the real Chrome, on the folder `bundle.write` lays out.
 
-The folder follows ARCHITECTURE.md, section 7: engine, all-MiniLM-L6-v2 from the cache, manifest,
-and the centres of the 20 examples of examples/english. A server of its own serves it with the
-isolation headers. The labels the runtime gives the 100 held-out examples must match
-evaluate.predict on the same centres. The build command does not write this folder yet (row 7 of
-the queue); :func:`write_build` is the layout it has to produce.
+The folder is the one of ARCHITECTURE.md, section 7: engine, all-MiniLM-L6-v2 from the cache,
+manifest, and the centres of the 20 examples of examples/english. A server of its own serves it
+with the isolation headers. The labels the runtime gives the 100 held-out examples must match
+evaluate.predict on the same centres. Next to the manifest the fixture writes the ones the
+catalog of stage 1 cannot produce, or the runtime must refuse.
 
 Runs only with `pytest -m e2e`. It downloads the same files as tests/test_build_e2e.py.
 """
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import math
-import shutil
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -25,27 +24,14 @@ import pytest
 from playwright.sync_api import Page
 
 import cifarium
-from cifarium import catalog, config, evaluate, examples, hub, paths, vendor
-from cifarium.bench import (
-    Bench,
-    decode_vectors,
-    embed_job,
-    external_data_files,
-    graph_name,
-    has_real_gpu,
-    open_bench,
-)
+from cifarium import bundle, catalog, config, evaluate, examples, hub, vendor
+from cifarium.bench import Bench, decode_vectors, embed_job, has_real_gpu, open_bench
 from cifarium.server import BenchServer
 
 pytestmark = pytest.mark.e2e
 
 GOLDEN = Path(__file__).resolve().parents[1] / "examples" / "english"
 MODEL_ID = "all-minilm-l6-v2"
-ENGINE_FILES = {
-    "library": vendor.LIBRARY_FILE,
-    "loader": vendor.WASM_LOADER_FILE,
-    "executor": vendor.WASM_BINARY_FILE,
-}
 TIMEOUT_S = 180.0
 
 # A page that only imports the runtime. Python passes it an async function as text and waits,
@@ -99,82 +85,8 @@ class Golden:
         return f"{self.server.url}/site/{name}"
 
 
-def write_build(out: Path, entry: catalog.Entry, recipe: catalog.Recipe, names: list[str],
-                centres: np.ndarray) -> dict[str, Any]:
-    """Lay out a build folder for a classify task by examples, and return its manifest.
-
-    Section 7: the runtime, the engine under vendor/transformers-<version>/, the model under
-    models/<revision>/<organisation>/<model>/ (the library refuses a model id with "@<hash>",
-    so the version is a folder of its own), labels.json and labels.bin under data/.
-    """
-    runtime = paths.web_dir() / "runtime"
-    for name in ("cifarium.js", "cifarium-worker.js"):
-        shutil.copyfile(runtime / name, out / name)
-
-    engine_path = f"vendor/transformers-{vendor.TRANSFORMERS_VERSION}/"
-    (out / engine_path).mkdir(parents=True)
-    source = vendor.ensure_engine()
-    engine: dict[str, Any] = {
-        "transformers": vendor.TRANSFORMERS_VERSION,
-        "onnxruntime_web": vendor.ORT_WEB_VERSION,
-    }
-    for role, name in ENGINE_FILES.items():
-        shutil.copyfile(source / name, out / engine_path / name)
-        engine[role] = {"path": engine_path + name, "bytes": vendor.ENGINE_BYTES[name]}
-
-    model_path = f"models/{entry.revision}/"
-    target = out / model_path / entry.repo
-    for name in entry.files():
-        (target / name).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(hub.model_dir(entry.repo) / name, target / name)
-
-    (out / "data").mkdir()
-    labels = json.dumps(names, ensure_ascii=False).encode("utf-8")
-    (out / "data" / "labels.json").write_bytes(labels)
-    rows = np.asarray(centres, dtype="<f4").tobytes()
-    (out / "data" / "labels.bin").write_bytes(rows)
-
-    manifest = {
-        "format": 1,
-        "cifarium": cifarium.__version__,
-        "task": "classify",
-        "recipe": recipe.kind,
-        "model": {"repo": entry.repo, "revision": entry.revision, "license": entry.license,
-                  "path": model_path},
-        "variants": {"cpu": variant_record(entry, "cpu")},
-        "params": {"pooling": recipe.params["pooling"], "prefix": recipe.params["prefix"]},
-        "engine": engine,
-        "data": {
-            "labels": {"path": "data/labels.json", "bytes": len(labels)},
-            "centres": {"path": "data/labels.bin", "bytes": len(rows)},
-        },
-    }
-    write_manifest(out / "cifarium.json", manifest)
-    return manifest
-
-
-def variant_record(entry: catalog.Entry, name: str) -> dict[str, Any]:
-    variant = entry.variants[name]
-    return {
-        "device": variant.device,
-        "dtype": variant.dtype,
-        "graph": graph_name(variant.files, variant.dtype),
-        "externalData": external_data_files(variant.files),
-        "files": entry.files(name),
-    }
-
-
 def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
     path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def first_load(manifest: dict[str, Any], variant: str) -> tuple[int, set[str]]:
-    """Bytes and paths of everything a first visit downloads for ``variant``."""
-    refs = [manifest["engine"][role] for role in ENGINE_FILES] + list(manifest["data"].values())
-    folder = manifest["model"]["path"] + manifest["model"]["repo"] + "/"
-    files = {ref["path"]: ref["bytes"] for ref in refs}
-    files.update({folder + name: size for name, size in manifest["variants"][variant]["files"].items()})
-    return sum(files.values()), set(files)
 
 
 @pytest.fixture(scope="module")
@@ -198,10 +110,10 @@ def golden(tmp_path_factory) -> Golden:
         centres = centres.astype("<f4").astype(np.float64)
         best, scores = evaluate.predict(vectors[len(shipped.items):], centres)
 
-        manifest = write_build(out, entry, recipe, names, centres)
+        manifest = bundle.write(out, catalog.Candidate(entry, recipe), names, centres).manifest
         write_variants(out, manifest)
         (out / "test.html").write_text(TEST_PAGE, encoding="utf-8")
-        total, files = first_load(manifest, "cpu")
+        total, files = bundle.first_load(manifest, "cpu")
         with BenchServer({"site": out}) as server:
             yield Golden(
                 bench=bench, server=server, folder=out, names=names,

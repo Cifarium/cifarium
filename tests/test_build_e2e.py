@@ -12,12 +12,13 @@ a task for a manual `cifarium build`.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
-from cifarium import build, paths
+from cifarium import bundle, paths
 
 ENGLISH: tuple[tuple[str, str], ...] = (
     ("Where is my package? The tracking page hasn't updated in four days.", "shipping"),
@@ -81,16 +82,26 @@ def test_a_set_has_three_labels_with_equal_counts_and_no_repeats(items):
 
 
 @pytest.mark.e2e
-def test_build_chooses_all_minilm_for_the_english_set_in_chrome(tmp_path, capsys):
-    settings = write_task(tmp_path, ENGLISH)
-
-    assert build.run(settings) == 0
-
-    output = capsys.readouterr().out
+def test_build_chooses_all_minilm_for_the_english_set_and_writes_its_folder(english_build):
+    assert english_build.code == 0, english_build.err
+    output = english_build.out
     assert "Chosen: all-minilm-l6-v2 (Xenova/all-MiniLM-L6-v2, q8 on the processor" in output
     assert "crossOriginIsolated" in output and "not crossOriginIsolated" not in output
     assert "one thread    " in output and "not measured" not in output
     assert "speed limit   none" in output
-    # The build writes nothing yet, and the browser's copy of the model does not stay on disk.
-    assert not (tmp_path / "cifarium-out").exists()
+    assert re.search(r"Wrote .*cifarium-out: \d+ files, [\d.]+ MB on disk; a first visit downloads [\d.]+ MB", output)
+    # The folder of ARCHITECTURE.md, section 7, and the browser's copy of the model does not stay on disk.
+    manifest = json.loads((english_build.folder / "cifarium.json").read_text(encoding="utf-8"))
+    assert (manifest["format"], manifest["task"], manifest["recipe"]) == (1, "classify", "embed-centroid")
+    assert manifest["model"]["repo"] == "Xenova/all-MiniLM-L6-v2"
+    assert set(manifest["variants"]) == {"cpu"}
+    assert json.loads((english_build.folder / "data" / "labels.json").read_text(encoding="utf-8")) == [
+        "shipping", "returns", "technical"]
+    assert (english_build.folder / "data" / "labels.bin").stat().st_size == 3 * 384 * 4
+    total, files = bundle.first_load(manifest, "cpu")
+    assert all((english_build.folder / name).stat().st_size > 0 for name in files)
+    assert total == sum((english_build.folder / name).stat().st_size for name in files)
+    for name in ("index.html", "cifarium.js", "cifarium-worker.js", "LICENSES.txt", "hosting/_headers",
+                 "hosting/vercel.json", "hosting/nginx.conf"):
+        assert (english_build.folder / name).is_file(), name
     assert not paths.profile_dir().exists()

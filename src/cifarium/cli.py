@@ -73,8 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Read the settings and the examples, download the engine and the candidate models "
             "into the cache, run them in the installed Chrome from the lightest, and print why "
-            "each one was or was not taken and which model was chosen. The folder for the site "
-            "is not written yet. Exit code 0 when a model was chosen, 1 otherwise."
+            "each one was or was not taken and which model was chosen. Then write the folder for "
+            "the site to the `output` of the settings. Exit code 0 when the folder was written, 1 otherwise."
         ),
     )
     build.add_argument(

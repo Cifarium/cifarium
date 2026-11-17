@@ -1,0 +1,22 @@
+Licenses of the files in this folder
+===================================
+
+This folder was made by cifarium $cifarium. Everything in it is served from your own site: the page
+runs the model in the visitor's browser and sends nothing anywhere.
+
+cifarium runtime: cifarium.js, cifarium-worker.js, index.html
+  Apache-2.0. https://github.com/Cifarium/cifarium/blob/main/LICENSE
+
+Transformers.js $transformers: $engine_path/transformers.min.js
+  Apache-2.0. https://github.com/huggingface/transformers.js/blob/main/LICENSE
+
+ONNX Runtime Web $onnxruntime_web: the .mjs and .wasm files in $engine_path
+  MIT. https://github.com/microsoft/onnxruntime/blob/main/LICENSE
+
+The model: $model_path$repo/
+  License: $license
+  The terms: https://huggingface.co/$license_source
+  Taken from https://huggingface.co/$repo at revision $revision.
+
+These are the names of the licenses and where to read them. When you pass the files on, keep the
+license of each part with it: the texts are at the addresses above.

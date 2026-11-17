@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cifarium example</title>
+<!--
+  An example page for this build: one text box, one button. The first click loads the model
+  (the files of this folder, nothing else), the next ones name the label of the text.
+  Every build writes this file again, so copy it before you change it. Serve the folder over
+  http or https: a page opened from file:// cannot start the background thread.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --fg: #1d2330;
+    --bg: #ffffff;
+    --muted: #596275;
+    --line: #c9d0dd;
+    --accent: #1f5eff;
+    --accent-fg: #ffffff;
+    --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #e8ecf4;
+      --bg: #12161f;
+      --muted: #9aa4b8;
+      --line: #2e3748;
+      --accent: #7a9dff;
+      --accent-fg: #0b1020;
+      --bad: #ff8a80;
+    }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 40rem; margin: 0 auto; padding: 2rem 1rem 3rem; }
+  h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
+  label { display: block; margin: 1.5rem 0 .25rem; font-weight: 600; }
+  textarea {
+    box-sizing: border-box; width: 100%; padding: .6rem .75rem; resize: vertical;
+    color: inherit; background: transparent; border: 1px solid var(--line); border-radius: .5rem;
+    font: inherit;
+  }
+  button {
+    margin-top: .75rem; padding: .6rem 1.1rem; color: var(--accent-fg); background: var(--accent);
+    border: 0; border-radius: .5rem; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  progress { width: 100%; margin-top: .75rem; }
+  #result { min-height: 1.5em; margin: 1rem 0 0; font-size: 1.25rem; font-weight: 600; }
+  #error { margin: 1rem 0 0; color: var(--bad); }
+  #about { margin: 0; color: var(--muted); }
+  details { margin-top: 2rem; color: var(--muted); }
+  pre { overflow-x: auto; margin: .5rem 0 0; padding: .75rem; border: 1px solid var(--line); border-radius: .5rem; }
+</style>
+</head>
+<body data-state="created">
+<main>
+  <h1>cifarium example</h1>
+  <p id="about">Reading cifarium.json&hellip;</p>
+
+  <form id="form">
+    <label for="text">Text to classify</label>
+    <textarea id="text" rows="4" placeholder="Type a text here"></textarea>
+    <button id="go" type="submit" disabled>Load the model</button>
+    <progress id="bar" max="100" value="0" hidden></progress>
+  </form>
+
+  <p id="result" aria-live="polite"></p>
+  <p id="error" role="alert" hidden></p>
+
+  <details>
+    <summary>About this build</summary>
+    <pre id="info">Not loaded yet.</pre>
+  </details>
+</main>
+
+<script type="module">
+import { createCifarium } from './cifarium.js';
+
+const text = document.getElementById('text');
+const go = document.getElementById('go');
+const bar = document.getElementById('bar');
+const result = document.getElementById('result');
+const failure = document.getElementById('error');
+let model = null;
+
+function setState(state) {
+  document.body.dataset.state = state;
+}
+
+function showError(error) {
+  failure.textContent = error?.code ? `${error.code}: ${error.message}` : String(error?.message ?? error);
+  failure.hidden = false;
+}
+
+function megabytes(bytes) {
+  return `${(bytes / 1e6).toFixed(1)} MB`;
+}
+
+function describe(info) {
+  const lines = [
+    `model         ${info.model} (${info.license})`,
+    `labels        ${info.labels.join(', ')}`,
+    `device        ${info.device}, ${info.threads} thread${info.threads === 1 ? '' : 's'}`,
+    `first visit   ${megabytes(info.bytes)}`,
+    `built by      cifarium ${info.cifarium}, runtime ${info.runtime}`,
+  ];
+  if (!info.crossOriginIsolated) {
+    lines.push('', 'The page is not cross-origin isolated, so the model computes in one thread.',
+      'The settings in hosting/ add the headers that fix it.');
+  }
+  return lines.join('\n');
+}
+
+function syncButton() {
+  go.disabled = model === null || (document.body.dataset.state === 'ready' && text.value.trim() === '');
+}
+
+async function load() {
+  setState('loading');
+  go.disabled = true;
+  bar.hidden = false;
+  try {
+    const info = await model.load({ onProgress: (progress) => { bar.value = progress.percent; } });
+    document.getElementById('info').textContent = describe(info);
+    go.textContent = 'Name the label';
+    setState('ready');
+    text.focus();
+  } catch (error) {
+    showError(error);
+    setState('failed');
+  } finally {
+    bar.hidden = true;
+    syncButton();
+  }
+}
+
+async function classify() {
+  go.disabled = true;
+  try {
+    const { label, score } = await model.run(text.value);
+    result.textContent = `${label} (${score.toFixed(2)})`;
+    result.dataset.label = label;
+    failure.hidden = true;
+  } catch (error) {
+    showError(error);
+  } finally {
+    syncButton();
+  }
+}
+
+document.getElementById('form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (model === null || go.disabled) return;
+  failure.hidden = true;
+  if (document.body.dataset.state === 'ready') classify();
+  else if (document.body.dataset.state !== 'loading') load();
+});
+text.addEventListener('input', syncButton);
+
+try {
+  model = await createCifarium('./cifarium.json');
+  const info = model.info();
+  document.getElementById('about').textContent =
+    `${info.model}, ${info.task} with ${info.recipe}. The first click downloads the model.`;
+  syncButton();
+} catch (error) {
+  document.getElementById('about').textContent = 'The model is not available.';
+  showError(error);
+  setState('failed');
+}
+</script>
+</body>
+</html>

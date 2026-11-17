@@ -8,7 +8,7 @@ is too slow does not end the build: the walk goes on with the candidates behind 
 chosen model is run once more in a single thread, on a few examples, to show what a site
 without the isolation headers gets. ARCHITECTURE.md, section 9 (``build``), has the choices.
 
-The folder for the site is not written yet; the result is printed.
+The result is printed and the folder for the site is written to ``output`` by :mod:`bundle`.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from typing import Any
 
 import numpy as np
 
-from . import catalog, config, evaluate, examples, hub, selection, vendor
+from . import bundle, catalog, config, evaluate, examples, hub, selection, vendor
 from .bench import Bench, BenchError, decode_vectors, embed_job, open_bench
 from .selection import BYTES_PER_MB, Outcome, Verdict
 
@@ -219,7 +219,8 @@ def download(entry: catalog.Entry, say: Callable[[str], None]) -> None:
 
 
 def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = False) -> int:
-    """Run the command and return the process exit code: 0 when a model was chosen."""
+    """Run the command and return the process exit code: 0 when a model was chosen and the
+    folder written, 1 otherwise."""
     _tolerate_any_text()
     try:
         settings = config.load(path)
@@ -227,6 +228,11 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
         candidates = catalog.candidates(settings.task)
     except config.TaskFileError as error:
         print(error, file=sys.stderr)
+        return 1
+    if settings.host != "bundle":
+        # Before the bench: a long run must not end in a folder the settings did not ask for.
+        print(f"{settings.path}: host: {settings.host} is not supported yet: the folder always carries "
+              "the model. Use `host: bundle` or leave the key out.", file=sys.stderr)
         return 1
 
     texts = [item.input for item in items.items]
@@ -271,8 +277,40 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
     _say("")
     for line in describe_chosen(chosen, single, items.items):
         _say(line)
-    _say("\nNothing is written yet: the folder for the site comes in a later version.")
+
+    assert result.vectors is not None
+    names = [label.name for label in items.labels]
+    centres = evaluate.centroids(result.vectors, [item.expected for item in items.items], names)
+    try:
+        built = bundle.write(settings.output, chosen.outcome.candidate, names, centres)
+    except bundle.BundleError as error:
+        print(f"\nFAILED: {error}", file=sys.stderr)
+        return 1
+    _say("")
+    for line in describe_built(built):
+        _say(line)
     return 0
+
+
+def describe_built(built: bundle.Built) -> list[str]:
+    """What was written, and how to look at it."""
+    where = _shown(built.folder)
+    lines = [
+        f"Wrote {where}: {len(built.files)} files, {_mb(built.size_bytes)} on disk; "
+        f"a first visit downloads {_mb(built.first_load_bytes)}",
+    ]
+    if built.removed:
+        lines.append(f"  removed {len(built.removed)} files of the previous build that this one does not use")
+    lines += [
+        f"  {bundle.PAGE} is an example page and every build writes it again: copy it before you change it",
+        f"  hosting/ has the headers for Netlify, Vercel and nginx; {bundle.LICENSES} the licenses",
+        "",
+        "To look at it, serve the folder over http (a page opened from file:// cannot start the model):",
+        f"  python -m http.server 8000 --directory {_quoted(where)}",
+        "and open http://localhost:8000/ . That server sends no isolation headers, so the model runs in "
+        "one thread there.",
+    ]
+    return lines
 
 
 def describe_table(rows: Sequence[Row]) -> list[str]:
@@ -350,6 +388,20 @@ def describe_browser(bench: Bench) -> str:
 def _report(row: Row) -> None:
     extra = f", usual answer {_ms(row.speed.median_ms)}" if row.chosen and row.speed is not None else ""
     _say(f"  {row.outcome.candidate.entry.id}: {row.verdict}, {row.message}{extra}")
+
+
+def _shown(folder: os.PathLike[str] | str) -> str:
+    """The folder as the user can type it: relative to the current folder when it lies inside."""
+    path = os.path.abspath(folder)
+    try:
+        inside = os.path.commonpath([path, os.getcwd()]) == os.getcwd()
+    except ValueError:  # another drive on Windows
+        inside = False
+    return os.path.relpath(path) if inside and path != os.getcwd() else path
+
+
+def _quoted(text: str) -> str:
+    return f'"{text}"' if " " in text else text
 
 
 def _key(candidate: catalog.Candidate) -> tuple[str, str]:
