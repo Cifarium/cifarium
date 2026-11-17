@@ -47,6 +47,9 @@
  * @property {number} [externalData] Number of `.onnx_data` files next to the graph. Passed
  *   to the library as `use_external_data_format` when above 0; otherwise the library
  *   reads it from `transformers.js_config` in the model's config.json.
+ * @property {number} [threads] Threads of ONNX Runtime on the processor. Without it the
+ *   runtime picks them itself: half the cores, at most four, on a crossOriginIsolated page,
+ *   and one on a page without the isolation headers. 1 measures such a page here.
  */
 
 /** @type {readonly string[]} */
@@ -121,6 +124,9 @@ async function embed(job) {
   if (!POOLINGS.includes(job.pooling)) {
     throw new Error(`Unknown pooling ${JSON.stringify(job.pooling)}; expected ${POOLINGS.join(', ')}.`);
   }
+  if (job.threads !== undefined && !(Number.isInteger(job.threads) && job.threads >= 1)) {
+    throw new Error(`threads must be a whole number from 1, got ${JSON.stringify(job.threads)}.`);
+  }
   const prefix = job.prefix ?? '';
   const { env, pipeline } = await import(job.engine.library);
 
@@ -129,6 +135,11 @@ async function embed(job) {
   env.allowRemoteModels = false;
   env.localModelPath = job.modelsPath;
   env.backends.onnx.wasm.wasmPaths = { mjs: job.engine.wasmLoader, wasm: job.engine.wasmBinary };
+  if (job.threads !== undefined) {
+    // ONNX Runtime reads this once, when it starts on the first model, and picks its own
+    // number only if none is set. A new tab per job means every job starts it afresh.
+    env.backends.onnx.wasm.numThreads = job.threads;
+  }
 
   // Empty the library's store, so that what follows is a first load.
   await caches.delete(env.cacheKey);

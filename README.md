@@ -4,7 +4,7 @@
 
 Find the smallest AI model that handles your examples right in the browser, and get a folder you can drop into your site.
 
-> **Early development.** Today only `cifarium init` and the temporary `cifarium smoke` work. The first usable version will be 0.1.0; until then the file formats may still change.
+> **Early development.** Today `cifarium init` works, and `cifarium build` picks the model and prints why, but does not write the folder yet. The first usable version will be 0.1.0; until then the file formats may still change.
 
 ## Why
 
@@ -53,6 +53,7 @@ git clone https://github.com/Cifarium/cifarium
 cd cifarium
 python -m pip install -e .
 cifarium init
+cifarium build
 ```
 
 ## For contributors

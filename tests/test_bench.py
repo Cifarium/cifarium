@@ -84,6 +84,15 @@ def test_a_job_takes_pooling_and_prefix_from_the_recipe():
     }
 
 
+def test_a_job_fixes_the_threads_only_when_asked():
+    entry = _entry("all-minilm-l6-v2")
+    recipe = _centroid_recipe(entry)
+    assert "threads" not in embed_job(entry, recipe, ["a"])
+    assert embed_job(entry, recipe, ["a"], threads=1)["threads"] == 1
+    with pytest.raises(ValueError, match="at least 1"):
+        embed_job(entry, recipe, ["a"], threads=0)
+
+
 def test_a_job_counts_the_external_data_files_of_the_variant():
     entry = _entry("embeddinggemma-300m")
     job = embed_job(entry, _centroid_recipe(entry), ["a"])

@@ -67,16 +67,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    smoke = commands.add_parser(
-        "smoke",
-        help="temporary check: load a small model in Chrome and compute vectors",
+    build = commands.add_parser(
+        "build",
+        help="find the lightest model that gets your examples right in the browser",
         description=(
-            "Temporary end-to-end check. Downloads the engine and all-MiniLM-L6-v2 into "
-            "the cache, starts the local server and the installed Chrome, computes the "
-            "vectors of 20 English sentences on the processor and prints the result."
+            "Read the settings and the examples, download the engine and the candidate models "
+            "into the cache, run them in the installed Chrome from the lightest, and print why "
+            "each one was or was not taken and which model was chosen. The folder for the site "
+            "is not written yet. Exit code 0 when a model was chosen, 1 otherwise."
         ),
     )
-    smoke.add_argument(
+    build.add_argument(
+        "settings", nargs="?", default=DEFAULT_FILE, help=f"the settings file (default: {DEFAULT_FILE})"
+    )
+    build.add_argument(
         "--headed", action="store_true", help="open a Chrome window instead of running without one"
     )
 
@@ -108,11 +112,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "init":
         return run_init(Path.cwd())
-    if args.command == "smoke":
+    if args.command == "build":
         # Imported here so that `cifarium --help` does not load Playwright and numpy.
-        from . import smoke
+        from . import build
 
-        return smoke.run(headed=args.headed)
+        return build.run(args.settings, headed=args.headed)
     if args.command == "catalog-update":
         from . import catalog_update
 

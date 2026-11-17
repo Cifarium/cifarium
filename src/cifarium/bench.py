@@ -64,7 +64,7 @@ class Bench:
         """Run one job in a new tab and return what the page computed.
 
         ``job`` holds ``model``, ``dtype``, ``device``, ``inputs``, ``pooling``,
-        ``prefix``, ``modelFileName`` and ``externalData`` (``EmbedJob`` in bench.js; :func:`embed_job`
+        ``prefix``, ``modelFileName``, ``externalData`` and, if set, ``threads`` (``EmbedJob`` in bench.js; :func:`embed_job`
         makes one from the catalog); the addresses of the engine and of the
         models folder are filled in here.
         The page's console messages and errors come back under ``events``.
@@ -100,19 +100,27 @@ class Bench:
 
 
 def embed_job(
-    entry: catalog.Entry, recipe: catalog.Recipe, inputs: Sequence[str], variant: str = "cpu"
+    entry: catalog.Entry,
+    recipe: catalog.Recipe,
+    inputs: Sequence[str],
+    variant: str = "cpu",
+    *,
+    threads: int | None = None,
 ) -> dict[str, Any]:
     """The bench job that turns ``inputs`` into vectors the way ``recipe`` says.
 
     Pooling and prefix come from the recipe and are applied by the page, so the
     numbers match what the site will compute. The graph the library loads and
     the number of its ``.onnx_data`` files come from the files the catalog
-    lists for the variant, not from the library's defaults.
+    lists for the variant, not from the library's defaults. ``threads`` fixes the
+    number of processor threads; without it the engine picks them, as on a site.
     """
     if recipe.kind != "embed-centroid":
         raise ValueError(f"{entry.id}: recipe {recipe.kind} does not turn text into vectors")
+    if threads is not None and threads < 1:
+        raise ValueError(f"threads must be at least 1, got {threads}")
     chosen = entry.variants[variant]
-    return {
+    job: dict[str, Any] = {
         "model": entry.repo,
         "dtype": chosen.dtype,
         "device": chosen.device,
@@ -122,6 +130,9 @@ def embed_job(
         "modelFileName": graph_name(chosen.files, chosen.dtype),
         "externalData": external_data_files(chosen.files),
     }
+    if threads is not None:
+        job["threads"] = threads
+    return job
 
 
 def graph_name(files: Iterable[str], dtype: str) -> str:
