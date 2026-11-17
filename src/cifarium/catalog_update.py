@@ -26,9 +26,14 @@ from .config import did_you_mean
 
 # Files every model needs next to its graph.
 COMMON_FILES = ("config.json", "tokenizer.json", "tokenizer_config.json")
-# The only dtypes the catalog takes for the cpu variant, and the graph file of each. The order
-# is the tie-break: at equal weight q8 wins.
-DTYPE_GRAPHS = {"q8": "onnx/model_quantized.onnx", "q4": "onnx/model_q4.onnx"}
+# The only dtypes the catalog takes for the cpu variant, and the graph files of each, the
+# preferred one first. The order of the dtypes is the tie-break: at equal weight q8 wins.
+# q4 prefers the graph without GatherBlockQuantized: the build of onnxruntime-web in the
+# engine has no such operation, so ``model_q4.onnx`` of Gemma does not load on the processor.
+DTYPE_GRAPHS = {
+    "q8": ("onnx/model_quantized.onnx",),
+    "q4": ("onnx/model_no_gather_q4.onnx", "onnx/model_q4.onnx"),
+}
 VARIANT = "cpu"
 
 # Top-level key of a YAML file: it starts in the first column.
@@ -90,20 +95,23 @@ def pick(info: hub.RepoInfo) -> Fresh:
     """Choose the files of one model by the rule of section 4. Raises :class:`Problem`.
 
     Common files are fixed. The cpu variant is q8 or q4, whichever weighs less counting the
-    graph and its ``.onnx_data`` parts; at equal weight q8. Names are matched exactly:
-    ``model_no_gather_q4.onnx`` is not q4.
+    graph and its ``.onnx_data`` parts; at equal weight q8. The graph of a dtype is the first
+    of its names in ``DTYPE_GRAPHS`` that the Hub has, and only its own data parts come with
+    it. Names are matched exactly, never as substrings.
     """
     missing = [name for name in COMMON_FILES if name not in info.files]
     if missing:
         raise Problem(f"common file missing on the Hub: {', '.join(missing)}")
     options: dict[str, dict[str, int]] = {}
-    for dtype, graph in DTYPE_GRAPHS.items():
-        if graph in info.files:
+    for dtype, graphs in DTYPE_GRAPHS.items():
+        graph = next((name for name in graphs if name in info.files), None)
+        if graph is not None:
             data = re.compile(re.escape(graph) + r"_data(_\d+)?")
             options[dtype] = {name: size for name, size in sorted(info.files.items())
                               if name == graph or data.fullmatch(name)}
     if not options:
-        raise Problem(f"no q8 ({DTYPE_GRAPHS['q8']}) or q4 ({DTYPE_GRAPHS['q4']}) file on the Hub")
+        wanted = " or ".join(f"{dtype} ({' or '.join(graphs)})" for dtype, graphs in DTYPE_GRAPHS.items())
+        raise Problem(f"no {wanted} file on the Hub")
     dtype = min(options, key=lambda name: (sum(options[name].values()), list(DTYPE_GRAPHS).index(name)))
     return Fresh(info.revision, {name: info.files[name] for name in COMMON_FILES}, dtype, options[dtype])
 

@@ -13,8 +13,8 @@ variants:
     device: wasm
     dtype: q4
     files:
-      onnx/model_q4.onnx: 519322
-      onnx/model_q4.onnx_data: 196725760
+      onnx/model_no_gather_q4.onnx: 529476
+      onnx/model_no_gather_q4.onnx_data: 194628608
 recipes:
   - task: classify
     kind: embed-centroid

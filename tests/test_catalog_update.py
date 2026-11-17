@@ -473,7 +473,6 @@ def test_the_lighter_of_q8_and_q4_wins_counting_the_data_parts():
     files = {
         "onnx/model_quantized.onnx": 5, "onnx/model_quantized.onnx_data": 300,
         "onnx/model_q4.onnx": 5, "onnx/model_q4.onnx_data": 200, "onnx/model_q4.onnx_data_1": 10,
-        "onnx/model_no_gather_q4.onnx": 5, "onnx/model_no_gather_q4.onnx_data": 100,  # not q4
         "onnx/model_q4f16.onnx": 1, "onnx/model_fp16.onnx": 1, "onnx/model.onnx": 1,  # not taken
     }
 
@@ -483,6 +482,48 @@ def test_the_lighter_of_q8_and_q4_wins_counting_the_data_parts():
     assert fresh.files == {"onnx/model_q4.onnx": 5, "onnx/model_q4.onnx_data": 200, "onnx/model_q4.onnx_data_1": 10}
     assert fresh.common_files == {"config.json": 1, "tokenizer.json": 2, "tokenizer_config.json": 3}
     assert fresh.revision == NEW_HASH
+
+
+GEMMA_LIKE = {
+    "onnx/model_q4.onnx": 5, "onnx/model_q4.onnx_data": 200,  # needs GatherBlockQuantized
+    "onnx/model_no_gather_q4.onnx": 5, "onnx/model_no_gather_q4.onnx_data": 190,
+}
+
+
+def test_q4_takes_the_graph_without_gather_block_quantized_and_only_its_own_data():
+    fresh = pick(info_of({**GEMMA_LIKE, "onnx/model_no_gather_q4.onnx_data_1": 7}))
+
+    assert fresh.dtype == "q4"
+    assert fresh.files == {"onnx/model_no_gather_q4.onnx": 5, "onnx/model_no_gather_q4.onnx_data": 190,
+                           "onnx/model_no_gather_q4.onnx_data_1": 7}
+
+
+def test_q4_falls_back_to_the_plain_graph_when_there_is_no_graph_without_gather():
+    without = {name: size for name, size in GEMMA_LIKE.items() if "no_gather" not in name}
+
+    assert pick(info_of(without)).files == {"onnx/model_q4.onnx": 5, "onnx/model_q4.onnx_data": 200}
+
+
+def test_the_graph_without_gather_is_preferred_even_when_it_is_heavier():
+    # The plain q4 graph may need an operation the engine lacks, so lighter does not mean usable.
+    heavier = {**GEMMA_LIKE, "onnx/model_no_gather_q4.onnx_data": 400}
+
+    assert list(pick(info_of(heavier)).files) == ["onnx/model_no_gather_q4.onnx", "onnx/model_no_gather_q4.onnx_data"]
+
+
+def test_q8_still_beats_q4_when_it_is_lighter_than_the_graph_without_gather():
+    files = {**GEMMA_LIKE, "onnx/model_quantized.onnx": 100, "onnx/model_quantized.onnx_data": 50}
+
+    fresh = pick(info_of(files))
+
+    assert (fresh.dtype, list(fresh.files)) == ("q8", ["onnx/model_quantized.onnx", "onnx/model_quantized.onnx_data"])
+
+
+def test_the_shipped_gemma_entry_names_the_graph_the_engine_can_load():
+    gemma = next(entry for entry in catalog.load() if entry.id == "embeddinggemma-300m")
+
+    assert gemma.variants["cpu"].dtype == "q4"
+    assert list(gemma.variants["cpu"].files) == ["onnx/model_no_gather_q4.onnx", "onnx/model_no_gather_q4.onnx_data"]
 
 
 def test_a_single_available_dtype_is_taken():
