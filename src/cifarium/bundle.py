@@ -41,6 +41,14 @@ ENGINE_FILES = {
 }
 CENTRES_FILE = "data/labels.bin"
 
+FIRST_LOAD_VARIANT = "cpu"
+"""The variant whose weight is "the first load" while the device is not known: the processor's.
+Every visitor can run it and stage 1 builds nothing else (ARCHITECTURE.md, section 7)."""
+
+PARAMS = {"embed-centroid": ("pooling", "prefix")}
+"""The parameters of a recipe that go into the manifest. ``dimensions`` stays in the catalog: the
+runtime reads the length of a vector from the size of the centres file."""
+
 TEMPLATES = "templates"
 """Folder of the example page, the hosting settings and the license file under ``web/``."""
 
@@ -58,7 +66,7 @@ class Built:
     removed: tuple[str, ...]
     """Files of the previous build that this one does not have any more, and that were deleted."""
     first_load_bytes: int
-    """What a first visit downloads for the processor's variant: engine, model and data."""
+    """What a first visit downloads, by :func:`first_load`, for the first of the variants written."""
     size_bytes: int
     """Everything the build holds on disk, which is what an upload to the site sends."""
 
@@ -106,41 +114,20 @@ def write(
     engine_dir = vendor.ensure_engine() if engine_dir is None else engine_dir
     model_dir = hub.model_dir(entry.repo) if model_dir is None else model_dir
 
+    manifest = manifest_of(candidate, labels, rows.nbytes, variants=variants, engine_sizes=engine_sizes)
     before = _previous(folder / MANIFEST)
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        engine_path = f"vendor/transformers-{vendor.TRANSFORMERS_VERSION}/"
-        engine: dict[str, Any] = {
-            "transformers": vendor.TRANSFORMERS_VERSION,
-            "onnxruntimeWeb": vendor.ORT_WEB_VERSION,
-        }
         for role, name in ENGINE_FILES.items():
-            _copy(engine_dir / name, folder / engine_path / name, engine_sizes[name])
-            engine[role] = {"path": engine_path + name, "bytes": engine_sizes[name]}
+            ref = manifest["engine"][role]
+            _copy(engine_dir / name, folder / ref["path"], ref["bytes"])
 
-        model_path = f"models/{entry.revision}/"
+        model_path = manifest["model"]["path"]
         for variant in variants:
             for name, size in entry.files(variant).items():
                 _copy(model_dir / name, folder / model_path / entry.repo / name, size)
 
         _write_bytes(folder / CENTRES_FILE, rows.tobytes())
-
-        manifest = {
-            "format": FORMAT,
-            "cifarium": cifarium.__version__,
-            "task": candidate.recipe.task,
-            "recipe": recipe.kind,
-            "labels": [{"name": label.name, "description": label.description} for label in labels],
-            "model": {"repo": entry.repo, "revision": entry.revision, "license": entry.license,
-                      "path": model_path},
-            "variants": {variant: variant_record(entry, variant) for variant in variants},
-            "params": {"pooling": recipe.params["pooling"], "prefix": recipe.params["prefix"]},
-            "engine": engine,
-            # The files of `data` depend on the recipe; embed-centroid has the centres only.
-            "data": {
-                "centres": {"path": CENTRES_FILE, "bytes": rows.nbytes},
-            },
-        }
 
         runtime = paths.web_dir() / "runtime"
         for name in RUNTIME_FILES:
@@ -162,6 +149,55 @@ def write(
     return Built(folder, manifest, ordered, removed, total, sum((folder / name).stat().st_size for name in ordered))
 
 
+def manifest_of(
+    candidate: catalog.Candidate,
+    labels: Sequence[Label],
+    centres_bytes: int,
+    *,
+    variants: Sequence[str] = (FIRST_LOAD_VARIANT,),
+    engine_sizes: Mapping[str, int] = vendor.ENGINE_BYTES,
+) -> dict[str, Any]:
+    """The manifest of a build of ``candidate``. Touches no file: the build and the selection both
+    ask it, so that what the selection weighs is what the build writes.
+
+    ``centres_bytes`` is the size of the centres file: four bytes for each number of each label.
+    Only the recipe ``embed-centroid`` has such a file; a recipe the folder is not written for yet
+    has no data (:func:`write` refuses it) and its weight is that of the engine and the model.
+    """
+    entry, recipe = candidate.entry, candidate.recipe
+    engine_path = f"vendor/transformers-{vendor.TRANSFORMERS_VERSION}/"
+    engine: dict[str, Any] = {
+        "transformers": vendor.TRANSFORMERS_VERSION,
+        "onnxruntimeWeb": vendor.ORT_WEB_VERSION,
+    }
+    for role, name in ENGINE_FILES.items():
+        engine[role] = {"path": engine_path + name, "bytes": engine_sizes[name]}
+    data = {"centres": {"path": CENTRES_FILE, "bytes": centres_bytes}} if recipe.kind == "embed-centroid" else {}
+    return {
+        "format": FORMAT,
+        "cifarium": cifarium.__version__,
+        "task": recipe.task,
+        "recipe": recipe.kind,
+        "labels": [{"name": label.name, "description": label.description} for label in labels],
+        "model": {"repo": entry.repo, "revision": entry.revision, "license": entry.license,
+                  "path": f"models/{entry.revision}/"},
+        "variants": {variant: variant_record(entry, variant) for variant in variants},
+        "params": {key: recipe.params[key] for key in PARAMS.get(recipe.kind, ())},
+        "engine": engine,
+        # The files of `data` depend on the recipe; embed-centroid has the centres only.
+        "data": data,
+    }
+
+
+def centres_bytes(candidate: catalog.Candidate, labels: int) -> int:
+    """The size the centres file of a build of ``candidate`` will have, from the number of labels
+    and the length of the vector the catalog names (``dimensions``); 0 for a recipe without one.
+    The selection needs it before there is a vector to measure."""
+    if candidate.recipe.kind != "embed-centroid":
+        return 0
+    return 4 * labels * candidate.recipe.params["dimensions"]
+
+
 def variant_record(entry: catalog.Entry, name: str) -> dict[str, Any]:
     """The manifest's record of one variant: how the library loads it and which files it reads."""
     variant = entry.variants[name]
@@ -175,8 +211,15 @@ def variant_record(entry: catalog.Entry, name: str) -> dict[str, Any]:
 
 
 def first_load(manifest: Mapping[str, Any], variant: str) -> tuple[int, set[str]]:
-    """Bytes and paths, relative to the manifest, of everything a first visit downloads for
-    ``variant``: the engine, the label data and the files of the variant."""
+    """THE definition of the weight of a first visit: bytes and paths, relative to the manifest, of
+    everything the first visit of a page with this build downloads for ``variant``: the three files
+    of the engine, the data of the recipe, and the files of the variant (the model's own and the
+    ones every variant shares). Nothing else: not the page, not the runtime, not the manifest, not
+    the files of the other variants. Uncompressed sizes, as the manifest holds them.
+
+    The selection (through :func:`manifest_of`), ``limits.max_size_mb``, :attr:`Built.first_load_bytes`
+    and the runtime's ``info().bytes`` are this number; ARCHITECTURE.md, section 7.
+    """
     refs = [manifest["engine"][role] for role in ENGINE_FILES] + list(manifest["data"].values())
     folder = manifest["model"]["path"] + manifest["model"]["repo"] + "/"
     files = {ref["path"]: ref["bytes"] for ref in refs}

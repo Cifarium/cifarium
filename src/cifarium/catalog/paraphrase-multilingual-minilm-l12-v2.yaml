@@ -19,3 +19,4 @@ recipes:
     kind: embed-centroid
     pooling: mean
     prefix: ""
+    dimensions: 384

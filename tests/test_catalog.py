@@ -30,6 +30,7 @@ recipes:
   - task: classify
     kind: embed-centroid
     pooling: mean
+    dimensions: 384
 """
 
 
@@ -88,17 +89,59 @@ def test_only_gemma_and_the_unknown_license_need_license_any():
 def test_e5_asks_for_its_query_prefix_and_bge_for_the_first_token():
     recipes = {c.entry.id: c.recipe.params for c in catalog.candidates("classify")}
 
-    assert recipes["multilingual-e5-small"] == {"pooling": "mean", "prefix": "query: "}
-    assert recipes["bge-small-en-v1.5"] == {"pooling": "cls", "prefix": ""}
+    assert recipes["multilingual-e5-small"] == {"pooling": "mean", "prefix": "query: ", "dimensions": 384}
+    assert recipes["bge-small-en-v1.5"] == {"pooling": "cls", "prefix": "", "dimensions": 384}
     assert recipes["mdeberta-v3-base-xnli"] == {}
 
 
-def test_first_load_counts_the_common_files_and_the_variant(tmp_path):
+def test_the_vector_lengths_of_the_catalog_are_those_of_the_models():
+    # Read from hidden_size in the config.json of each model (the cache of a build holds them); the
+    # first load of a build counts the centres of the labels from these numbers.
+    lengths = {c.entry.id: c.recipe.params["dimensions"] for c in catalog.candidates("classify")
+               if c.recipe.kind == "embed-centroid"}
+
+    assert lengths == {"all-minilm-l6-v2": 384, "bge-small-en-v1.5": 384, "embeddinggemma-300m": 768,
+                       "multilingual-e5-small": 384, "paraphrase-multilingual-minilm-l12-v2": 384}
+
+
+def test_a_license_that_is_not_permissive_comes_with_its_notice_and_the_others_may_have_one():
+    entries = {entry.id: entry for entry in catalog.load()}
+
+    for entry in entries.values():
+        assert (entry.notice is not None) or catalog.is_permissive(entry.license), entry.id
+    assert "gemma.ai/resources/terms" in entries["embeddinggemma-300m"].notice
+    assert "Gemma is provided under and subject to the Gemma Terms of Use" in entries["embeddinggemma-300m"].notice
+    assert entries["mobilebert-uncased-mnli"].notice.startswith("The card of this model names no license")
+
+
+def test_a_notice_is_required_when_the_license_is_not_permissive(tmp_path):
+    problems = problems_of(write(tmp_path, GOOD.replace("license: apache-2.0", "license: gemma")))
+
+    assert any(problem.startswith("notice: missing; the license gemma is not permissive") for problem in problems)
+
+
+def test_a_notice_is_kept_as_written_and_is_optional_for_a_permissive_license(tmp_path):
+    plain = catalog.read_entry(write(tmp_path, GOOD))
+    noted = catalog.read_entry(write(
+        tmp_path, GOOD.replace("languages:", "notice: |\n  Copyright (c) Org\n  Second line\nlanguages:"), "tiny-model"))
+
+    assert plain.notice is None
+    assert noted.notice == "Copyright (c) Org\nSecond line"
+
+
+@pytest.mark.parametrize("value", ["5", "''", "[a]"])
+def test_a_notice_must_be_text(tmp_path, value):
+    problems = problems_of(write(tmp_path, GOOD.replace("languages:", f"notice: {value}\nlanguages:")))
+
+    assert any(problem.startswith("notice: must be the text of the notice") for problem in problems), problems
+
+
+def test_the_files_of_an_entry_are_the_common_files_and_the_variants(tmp_path):
     entry = catalog.read_entry(write(tmp_path, GOOD))
 
     assert entry.files() == {"config.json": 10, "tokenizer.json": 20, "onnx/model_quantized.onnx": 100}
-    assert entry.first_load_bytes() == 130
-    assert entry.recipes == (catalog.Recipe("classify", "embed-centroid", {"pooling": "mean", "prefix": ""}),)
+    assert entry.recipes == (
+        catalog.Recipe("classify", "embed-centroid", {"pooling": "mean", "prefix": "", "dimensions": 384}),)
 
 
 @pytest.mark.parametrize(
@@ -131,12 +174,17 @@ def test_permissive_licenses(license, permissive):
         ("pooling: mean", "pooling: max", 'recipes, item 1: pooling: must be mean, cls or none; got "max"'),
         ("    pooling: mean\n", "", "recipes, item 1: pooling: must be mean, cls or none; got nothing"),
         ("pooling: mean", "pooling: mean\n    prefix: 5", "recipes, item 1: prefix: must be text; got 5"),
-        ("kind: embed-centroid\n    pooling: mean", "kind: zero-shot\n    hypothesis: x",
+        ("    dimensions: 384\n", "", "recipes, item 1: dimensions: must be a positive whole number; got nothing"),
+        ("dimensions: 384", "dimensions: 0", "dimensions: must be a positive whole number; got 0"),
+        ("dimensions: 384", "dimensions: '384'", 'dimensions: must be a positive whole number; got "384"'),
+        ("dimensions: 384", "dimensions: yes", "dimensions: must be a positive whole number; got true"),
+        ("kind: embed-centroid\n    pooling: mean\n    dimensions: 384", "kind: zero-shot\n    hypothesis: x",
          "recipes, item 1: hypothesis: unknown parameter of zero-shot; its parameters: none"),
         ("task: classify", "task: translate", 'recipes, item 1: task: must be one of classify, search, summarize'),
-        ("recipes:\n  - task: classify\n    kind: embed-centroid\n    pooling: mean\n", "recipes: []\n",
-         "recipes: must list at least one recipe"),
-        ("recipes:\n  - task: classify\n    kind: embed-centroid\n    pooling: mean\n", "", "recipes: missing"),
+        ("recipes:\n  - task: classify\n    kind: embed-centroid\n    pooling: mean\n    dimensions: 384\n",
+         "recipes: []\n", "recipes: must list at least one recipe"),
+        ("recipes:\n  - task: classify\n    kind: embed-centroid\n    pooling: mean\n    dimensions: 384\n",
+         "", "recipes: missing"),
     ],
 )
 def test_each_problem_names_the_key(tmp_path, old, new, expected):

@@ -36,6 +36,7 @@ recipes:
     kind: embed-centroid
     pooling: mean
     prefix: "query: "
+    dimensions: 384
 """
 
 SHARED = {
@@ -366,7 +367,8 @@ def test_a_license_mismatch_is_only_shown_and_the_exit_code_stays_one_even_with_
 
 
 def test_a_card_without_a_license_is_unknown_and_matches_the_entry(tmp_path):
-    folder = folder_with(tmp_path, **{"tiny-model": ENTRY.replace("license: apache-2.0", "license: unknown")})
+    unknown = ENTRY.replace("license: apache-2.0", "license: unknown\nnotice: The card names no license.")
+    folder = folder_with(tmp_path, **{"tiny-model": unknown})
     repos = tiny_repos(**{"org/tiny-source": card(license=None)})
 
     code, lines, _ = go(folder, repos)
@@ -433,7 +435,7 @@ def test_a_comment_between_the_blocks_and_crlf_line_endings_survive():
     assert f"revision: {NEW_HASH}\r\n" in rewritten
     assert "  config.json: 1\r\n  tokenizer.json: 2\r\n  tokenizer_config.json: 3\r\nvariants:" in rewritten.replace(
         "# picked by size\r\n", "")
-    assert rewritten.endswith('    prefix: "query: "\r\n')
+    assert rewritten.endswith('    prefix: "query: "\r\n    dimensions: 384\r\n')
 
 
 def test_a_file_that_fails_the_catalog_check_after_writing_is_restored(tmp_path, monkeypatch):

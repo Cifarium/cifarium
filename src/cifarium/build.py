@@ -18,7 +18,7 @@ import os
 import re
 import statistics
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -133,7 +133,7 @@ def choose(
     embed: selection.Embed,
     speed_of: SpeedOf,
     *,
-    engine_bytes: int | None = None,
+    engine_sizes: Mapping[str, int] | None = None,
     report: Callable[[Row], object] | None = None,
 ) -> Result:
     """The lightest candidate that passes on accuracy and on speed. No browser here: the bench
@@ -144,7 +144,7 @@ def choose(
     failed. ``report`` gets every candidate that ran on the bench as soon as its verdict is
     known; the ones the settings sorted out are only in the result.
     """
-    engine = vendor.engine_bytes() if engine_bytes is None else engine_bytes
+    sizes = vendor.ENGINE_BYTES if engine_sizes is None else engine_sizes
     limit = settings.limits.max_latency_ms
 
     def row_of(outcome: Outcome) -> Row:
@@ -156,10 +156,10 @@ def choose(
         if report is not None and outcome.tried:
             report(row_of(outcome))
 
-    walk = selection.ordered(candidates, engine)
+    walk = selection.ordered(candidates, items.labels, sizes)
     rows: list[Row] = []
     while True:
-        picked = selection.select(settings, items, walk, embed, engine_bytes=engine, report=on_outcome)
+        picked = selection.select(settings, items, walk, embed, engine_sizes=sizes, report=on_outcome)
         # The selection keeps the order it was given: ``walk`` is already the order of the walk.
         passed = next((k for k, outcome in enumerate(picked.outcomes) if outcome.verdict is Verdict.PASSED), None)
         if passed is None:

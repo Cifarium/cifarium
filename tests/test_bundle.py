@@ -41,7 +41,7 @@ def entry(revision: str = REVISION, license: str = "apache-2.0") -> catalog.Entr
 
 
 def candidate(revision: str = REVISION, license: str = "apache-2.0") -> catalog.Candidate:
-    recipe = catalog.Recipe("classify", "embed-centroid", {"pooling": "mean", "prefix": ""})
+    recipe = catalog.Recipe("classify", "embed-centroid", {"pooling": "mean", "prefix": "", "dimensions": 3})
     return catalog.Candidate(entry(revision, license), recipe)
 
 
@@ -126,6 +126,36 @@ def test_the_manifest_is_the_one_the_runtime_reads(sources, out):
     assert files <= tree(out)
     for path in files:
         assert (out / path).stat().st_size > 0
+
+
+def test_the_weight_of_a_first_visit_is_one_number_for_the_selection_the_build_and_the_manifest(sources, out):
+    from cifarium import selection
+
+    labels = [Label(name) for name in LABELS]
+    counted_before_the_build = selection.first_load_bytes(candidate(), labels, ENGINE_SIZES)
+
+    built = sources.write(out)
+
+    # engine 11 + 7 + 13, the files of the model 9 + 5, the centres of 3 labels of 3 numbers 36.
+    assert counted_before_the_build == built.first_load_bytes == 11 + 7 + 13 + 9 + 5 + 36
+    assert bundle.first_load(built.manifest, "cpu")[0] == built.first_load_bytes
+    # Not the page, not the runtime, not the manifest, not the licenses: a visitor's first visit
+    # downloads the page and the runtime too, but their weight is not what the limit is about.
+    assert built.size_bytes > built.first_load_bytes
+
+
+def test_a_model_with_two_variants_counts_only_the_variant_asked_for(sources, out):
+    gpu = catalog.Variant("gpu", "webgpu", "q4f16", {"onnx/model_q4f16.onnx": 4})
+    two = catalog.Entry(Path("tiny.yaml"), "tiny", "org/tiny", REVISION, "apache-2.0", "org/source", ("en",),
+                        dict(MODEL_FILES), {**entry().variants, "gpu": gpu}, ())
+    who = catalog.Candidate(two, candidate().recipe)
+    manifest = bundle.manifest_of(who, [Label(name) for name in LABELS], 36, variants=("cpu", "gpu"),
+                                  engine_sizes=ENGINE_SIZES)
+
+    cpu, gpu_total = bundle.first_load(manifest, "cpu")[0], bundle.first_load(manifest, "gpu")[0]
+
+    assert cpu == 11 + 7 + 13 + 9 + 5 + 36
+    assert gpu_total == 11 + 7 + 13 + 9 + 4 + 36
 
 
 def test_the_manifest_format_is_the_one_the_runtime_reads():

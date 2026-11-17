@@ -26,19 +26,26 @@ from cifarium.selection import Verdict
 
 MB = 1_000_000
 ENGINE = MB
+ENGINE_SIZES = {vendor.LIBRARY_FILE: ENGINE - 2, vendor.WASM_LOADER_FILE: 1, vendor.WASM_BINARY_FILE: 1}
+"""The engine of the tests weighs one megabyte in all."""
 LABELS = ("alpha", "beta")
 EXPECTED = ["alpha", "beta"] * 10
+DIMENSIONS = len(LABELS)
+"""The fake vectors have one axis for each label; the centres of two labels weigh 16 bytes."""
+CENTRES = 4 * len(LABELS) * DIMENSIONS
 
 
 # --- choose, on a fake bench function ----------------------------------------------------------
 
 
 def make(entry_id: str, model_mb: int, *, license: str = "apache-2.0") -> catalog.Candidate:
-    """A candidate whose first load is ``model_mb`` megabytes without the engine."""
-    variants = {"cpu": catalog.Variant("cpu", "wasm", "q8", {"onnx/model_quantized.onnx": model_mb * MB - 1})}
+    """A candidate whose first load is ``model_mb`` megabytes, engine and centres of the labels apart."""
+    files = {"onnx/model_quantized.onnx": model_mb * MB - 1 - CENTRES}
+    variants = {"cpu": catalog.Variant("cpu", "wasm", "q8", files)}
     entry = catalog.Entry(Path(f"{entry_id}.yaml"), entry_id, f"org/{entry_id}", "0" * 40, license,
                           "org/source", ("multi",), {"config.json": 1}, variants, ())
-    return catalog.Candidate(entry, catalog.Recipe("classify", "embed-centroid", {"pooling": "mean", "prefix": ""}))
+    params = {"pooling": "mean", "prefix": "", "dimensions": DIMENSIONS}
+    return catalog.Candidate(entry, catalog.Recipe("classify", "embed-centroid", params))
 
 
 def task() -> Examples:
@@ -89,7 +96,8 @@ class FakeBench:
 
 def run_choose(candidates, bench: FakeBench, config: Config) -> tuple[build.Result, list[build.Row]]:
     reported: list[build.Row] = []
-    result = choose(config, task(), candidates, bench, bench.speed, engine_bytes=ENGINE, report=reported.append)
+    result = choose(config, task(), candidates, bench, bench.speed, engine_sizes=ENGINE_SIZES,
+                    report=reported.append)
     return result, reported
 
 
@@ -208,8 +216,14 @@ class FakeChrome:
             raise self.single_thread
         rows = np.array([[1.0 if topic in text else 0.0 for topic in TOPICS] for text in job["inputs"]])
         rows = (rows / np.linalg.norm(rows, axis=1, keepdims=True)).astype("<f4")
+        # The model of the real catalog returns as many numbers as the catalog says it does;
+        # zeros after the topic axes keep the length and the angles of the vectors.
+        promised = next(recipe.params["dimensions"] for candidate in catalog.candidates("classify")
+                        for recipe in [candidate.recipe]
+                        if candidate.entry.repo == job["model"] and recipe.kind == "embed-centroid")
+        rows = np.pad(rows, ((0, 0), (0, promised - rows.shape[1])))
         times = [3 * self.ms] + [self.ms * (2 if job.get("threads") == 1 else 1)] * (len(rows) - 1)
-        return {"count": len(rows), "dims": len(TOPICS), "loadMs": 500.0, "timesMs": times,
+        return {"count": len(rows), "dims": promised, "loadMs": 500.0, "timesMs": times,
                 "vectors": base64.b64encode(rows.tobytes()).decode("ascii"),
                 "threads": 4 if self.ignores_threads else job.get("threads", 4),
                 "crossOriginIsolated": True, "events": []}
@@ -296,7 +310,9 @@ def test_run_writes_the_folder_of_the_chosen_model_with_the_centres_of_its_label
     assert written.candidate.entry.id == "all-minilm-l6-v2"
     # The labels in the order of their first example; the fake page puts each topic on its own axis.
     assert written.names == list(TOPICS)
-    assert np.allclose(written.centres, np.eye(3))
+    # 384 numbers, the length the catalog names for all-MiniLM: the topic axes first, then zeros.
+    assert written.centres.shape == (3, 384)
+    assert np.allclose(written.centres[:, :3], np.eye(3)) and not written.centres[:, 3:].any()
     assert "Wrote " in out and "2 files, 52.0 MB on disk; a first visit downloads 51.2 MB" in out
     assert "removed" not in out
     assert "index.html is an example page and every build writes it again" in out

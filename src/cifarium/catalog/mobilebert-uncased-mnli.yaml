@@ -3,6 +3,10 @@ repo: Xenova/mobilebert-uncased-mnli
 revision: 8b0ea66ab7b190bba77418ba03b67d69cfc9a1ee
 license: unknown
 license_source: typeform/mobilebert-uncased-mnli
+notice: |
+  The card of this model names no license ("License: More information needed"), so cifarium
+  cannot tell you under which terms it may be passed on. Read https://huggingface.co/typeform/mobilebert-uncased-mnli
+  and ask its authors before you publish this model on a site.
 languages: [en]
 common_files:
   config.json: 1092

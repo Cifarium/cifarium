@@ -21,15 +21,24 @@ CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
 # use under terms of its own (Gemma) is not among them; `license: any` takes it.
 PERMISSIVE_LICENSES = frozenset({"apache-2.0", "mit", "bsd-2-clause", "bsd-3-clause"})
 
-KEYS = ("id", "repo", "revision", "license", "license_source", "languages",
+KEYS = ("id", "repo", "revision", "license", "license_source", "notice", "languages",
         "common_files", "variants", "recipes")
+OPTIONAL_KEYS = ("notice",)
+"""``notice`` is required only for a license that is not permissive (:meth:`_Checker.run`)."""
 VARIANT_KEYS = ("device", "dtype", "files")
 LANGUAGES = ("en", "multi")
 DEVICES = {"cpu": "wasm", "gpu": "webgpu"}  # variant name -> Transformers.js device
 DTYPES = ("fp32", "fp16", "q8", "int8", "uint8", "q4", "q4f16", "bnb4")
-# Recipe kind -> its parameters: allowed values, or the type of a free value, and the default.
+# Recipe kind -> its parameters: allowed values, or the type of a free value (``str``, ``int`` for
+# a positive whole number), and the default. A default of None makes the parameter required.
+# ``dimensions`` is the length of the vector the model returns: the build needs it before it has a
+# vector, to know how much the centres of the labels add to the first load.
 RECIPES: dict[str, dict[str, tuple[Any, Any]]] = {
-    "embed-centroid": {"pooling": (("mean", "cls", "none"), None), "prefix": (str, "")},
+    "embed-centroid": {
+        "pooling": (("mean", "cls", "none"), None),
+        "prefix": (str, ""),
+        "dimensions": (int, None),
+    },
     "zero-shot": {},
 }
 
@@ -71,14 +80,14 @@ class Entry:
     common_files: dict[str, int]
     variants: dict[str, Variant]
     recipes: tuple[Recipe, ...]
+    notice: str | None = None
+    """The notice the license of the model asks to go with its files, from its card or its terms.
+    Goes into ``LICENSES.txt`` as written; required when the license is not permissive."""
 
     def files(self, variant: str = "cpu") -> dict[str, int]:
-        """Every file a visitor downloads for ``variant``, with sizes."""
+        """Every file of the model that a visitor downloads for ``variant``, with sizes. The weight
+        of a first visit is not the sum of these: see ``bundle.first_load``."""
         return {**self.common_files, **self.variants[variant].files}
-
-    def first_load_bytes(self, variant: str = "cpu") -> int:
-        """Weight of the model on a visitor's first visit, without the engine."""
-        return sum(self.files(variant).values())
 
 
 @dataclass(frozen=True)
@@ -137,7 +146,7 @@ class _Checker:
                 self.add(str(key), "unknown key" + (did_you_mean(str(key), KEYS)
                                                     or f"; the keys are {', '.join(KEYS)}"))
         for key in KEYS:
-            if self.data.get(key) is None:
+            if self.data.get(key) is None and key not in OPTIONAL_KEYS:
                 self.add(key, "missing")
 
         entry_id = self._text("id", _ID, "lowercase letters, digits, dots and dashes")
@@ -147,6 +156,7 @@ class _Checker:
         revision = self._text("revision", _HASH, "the full commit hash, 40 hex characters")
         license_ = self._text("license", _LICENSE, "a lowercase license id, like apache-2.0")
         source = self._text("license_source", _REPO, "organisation/model")
+        notice = self._notice(license_)
         languages = self._languages()
         common = self._files("common_files", self.data.get("common_files"))
         variants = self._variants()
@@ -155,7 +165,19 @@ class _Checker:
         if self.problems:
             raise CatalogError(self.path, self.problems)
         return Entry(self.path.resolve(), entry_id, repo, revision, license_, source,
-                     languages, common, variants, recipes)
+                     languages, common, variants, recipes, notice)
+
+    def _notice(self, license_: str | None) -> str | None:
+        value = self.data.get("notice")
+        if value is None:
+            if license_ is not None and not is_permissive(license_):
+                self.add("notice", f"missing; the license {license_} is not permissive, so the files "
+                         "go out with the notice its terms ask for (copy it from the model's card)")
+            return None
+        if not isinstance(value, str) or not value.strip():
+            self.add("notice", f"must be the text of the notice; got {describe(value)}")
+            return None
+        return value.strip()
 
     def _text(self, key: str, pattern: re.Pattern[str], shape: str) -> str | None:
         value = self.data.get(key)
@@ -266,6 +288,9 @@ class _Checker:
                     if param not in rule:
                         self.add(f"{where}: {key}", f"must be {', '.join(rule[:-1])} or {rule[-1]}; "
                                  f"got {describe(param)}")
+                elif rule is int:
+                    if isinstance(param, bool) or not isinstance(param, int) or param < 1:
+                        self.add(f"{where}: {key}", f"must be a positive whole number; got {describe(param)}")
                 elif not isinstance(param, rule):
                     self.add(f"{where}: {key}", f"must be text; got {describe(param)}")
                 params[key] = param

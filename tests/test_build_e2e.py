@@ -102,6 +102,12 @@ def test_build_chooses_all_minilm_for_the_english_set_and_writes_its_folder(engl
     total, files = bundle.first_load(manifest, "cpu")
     assert all((english_build.folder / name).stat().st_size > 0 for name in files)
     assert total == sum((english_build.folder / name).stat().st_size for name in files)
+    # One weight: the selection counted it before the folder existed (the table, the line of the
+    # chosen model, the limit), and the folder says the same afterwards, to the byte the tenth of a
+    # megabyte shows.
+    shown = f"{total / 1e6:.1f} MB"
+    assert f"first load    {shown}: " in output and f"a first visit downloads {shown}" in output
+    assert re.search(rf"all-minilm-l6-v2 +embed-centroid +{re.escape(shown)} +passed", output)
     for name in ("index.html", "cifarium.js", "cifarium-worker.js", "LICENSES.txt", "hosting/_headers",
                  "hosting/vercel.json", "hosting/nginx.conf"):
         assert (english_build.folder / name).is_file(), name

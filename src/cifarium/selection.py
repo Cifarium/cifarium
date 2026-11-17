@@ -17,14 +17,14 @@ from __future__ import annotations
 
 import enum
 import unicodedata
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
-from . import catalog, evaluate, vendor
+from . import bundle, catalog, evaluate, vendor
 from .bench import BenchError
-from .config import Config
+from .config import Config, Label
 from .examples import Examples
 
 BYTES_PER_MB = 1_000_000
@@ -65,7 +65,7 @@ class Outcome:
     message: str
     """One sentence for a person, saying why the candidate was not taken (or that it was)."""
     size_bytes: int
-    """What a visitor downloads on the first visit: the model and the engine."""
+    """What a first visit downloads: :func:`first_load_bytes`, the one weight of the build."""
     evaluation: evaluate.Evaluation | None = None
     """Set when the candidate was scored: its share, and the examples it missed."""
     error: str | None = None
@@ -96,7 +96,7 @@ def select(
     candidates: Sequence[catalog.Candidate],
     bench: Embed,
     *,
-    engine_bytes: int | None = None,
+    engine_sizes: Mapping[str, int] | None = None,
     report: Callable[[Outcome], object] | None = None,
 ) -> Selection:
     """Walk the candidates from the lightest and stop at the first one that passes.
@@ -105,8 +105,11 @@ def select(
     progress while the bench is busy. Only :class:`~cifarium.bench.BenchError` of the bench is
     taken as the candidate's failure; any other exception is a defect and goes up. Raises
     :class:`ValueError` before anything runs if the examples do not fit their labels.
+    ``engine_sizes`` are the sizes of the three engine files, those of the pinned version by
+    default (:data:`vendor.ENGINE_BYTES`); the tests give their own.
     """
-    engine = vendor.engine_bytes() if engine_bytes is None else engine_bytes
+    sizes = vendor.ENGINE_BYTES if engine_sizes is None else engine_sizes
+    engine = sum(sizes.values())
     texts = [item.input for item in examples.items]
     expected = [item.expected for item in examples.items]
     names = [label.name for label in examples.labels]
@@ -115,8 +118,8 @@ def select(
 
     outcomes: list[Outcome] = []
     vectors: np.ndarray | None = None
-    for candidate in ordered(candidates, engine):
-        size = first_load_bytes(candidate, engine)
+    for candidate in ordered(candidates, examples.labels, sizes):
+        size = first_load_bytes(candidate, examples.labels, sizes)
         sorted_out = skip(candidate, config, size, engine, share)
         if sorted_out is not None:
             outcome = Outcome(candidate, *sorted_out, size)
@@ -139,16 +142,25 @@ def passes(evaluation: evaluate.Evaluation) -> bool:
     return evaluation.passed
 
 
-def first_load_bytes(candidate: catalog.Candidate, engine_bytes: int) -> int:
-    """Weight of the first visit: the engine and the heaviest variant of the model."""
-    entry = candidate.entry
-    return engine_bytes + max(entry.first_load_bytes(name) for name in entry.variants)
+def first_load_bytes(
+    candidate: catalog.Candidate, labels: Sequence[Label], engine_sizes: Mapping[str, int] | None = None
+) -> int:
+    """What a first visit downloads when this candidate is chosen: :func:`bundle.first_load` of the
+    manifest that a build of it would write, for the processor's variant (the device is not known
+    before the build runs). It is the number of ``limits.max_size_mb``, the table of ``build`` and,
+    once the folder is written, ``Built.first_load_bytes`` and ``info().bytes`` of the runtime."""
+    sizes = vendor.ENGINE_BYTES if engine_sizes is None else engine_sizes
+    manifest = bundle.manifest_of(candidate, labels, bundle.centres_bytes(candidate, len(labels)),
+                                  variants=(bundle.FIRST_LOAD_VARIANT,), engine_sizes=sizes)
+    return bundle.first_load(manifest, bundle.FIRST_LOAD_VARIANT)[0]
 
 
-def ordered(candidates: Iterable[catalog.Candidate], engine_bytes: int) -> list[catalog.Candidate]:
+def ordered(
+    candidates: Iterable[catalog.Candidate], labels: Sequence[Label], engine_sizes: Mapping[str, int] | None = None
+) -> list[catalog.Candidate]:
     """The lightest first. Equal weights keep the order they came in, which is the order of the
     catalog: by id, and for one model by its recipes."""
-    return sorted(candidates, key=lambda candidate: first_load_bytes(candidate, engine_bytes))
+    return sorted(candidates, key=lambda candidate: first_load_bytes(candidate, labels, engine_sizes))
 
 
 def skip(
@@ -212,6 +224,14 @@ def _run(
     except BenchError as error:
         return Outcome(candidate, Verdict.BENCH, f"the bench failed: {_first_line(error)}", size,
                        error=str(error)), None
+    promised = candidate.recipe.params.get("dimensions")
+    got = np.shape(vectors)[-1] if np.ndim(vectors) == 2 else None
+    if promised is not None and got is not None and got != promised:
+        # The weight of the first visit was computed from the catalog's number; a different one
+        # would put a wrong weight under the limit, so the model does not pass.
+        message = f"the catalog says {promised} numbers to a vector, the bench returned {got}"
+        return Outcome(candidate, Verdict.VECTORS, f"the bench returned vectors that cannot be scored: "
+                       f"{message}", size, error=message), None
     try:
         evaluation = evaluate.leave_one_out(vectors, expected, names, pass_rate)
     except ValueError as error:

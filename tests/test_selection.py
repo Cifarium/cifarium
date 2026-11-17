@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from cifarium import catalog, selection, vendor
+from cifarium import bundle, catalog, selection, vendor
 from cifarium.bench import BenchError
 from cifarium.config import Config, Label, Limits
 from cifarium.examples import Example, Examples
@@ -20,10 +20,14 @@ from cifarium.selection import Verdict, select
 
 MB = 1_000_000
 ENGINE = MB
+ENGINE_SIZES = {vendor.LIBRARY_FILE: ENGINE - 2, vendor.WASM_LOADER_FILE: 1, vendor.WASM_BINARY_FILE: 1}
 """The engine of the tests weighs one megabyte, so a model of 9 MB makes a first load of 10."""
 
 LABELS = ("alpha", "beta")
 EXPECTED = ["alpha", "beta"] * 10
+DIMENSIONS = len(LABELS)
+"""The fake vectors have one axis for each label; the centres of two labels weigh 16 bytes."""
+CENTRES = 4 * len(LABELS) * DIMENSIONS
 
 
 # --- what the tests are made of --------------------------------------------------------------
@@ -32,13 +36,15 @@ EXPECTED = ["alpha", "beta"] * 10
 def make(entry_id: str, model_bytes: int = 10 * MB, *, license: str = "apache-2.0",
          languages: tuple[str, ...] = ("multi",), kind: str = "embed-centroid",
          gpu_bytes: int | None = None) -> catalog.Candidate:
-    """A candidate whose first load is exactly ``model_bytes``, without the engine."""
-    variants = {"cpu": catalog.Variant("cpu", "wasm", "q8", {"onnx/model_quantized.onnx": model_bytes - 1})}
+    """A candidate whose first load is exactly ``model_bytes``, without the engine, and the
+    centres of the labels that a build of it writes: they are inside the number."""
+    data = CENTRES if kind == "embed-centroid" else 0
+    variants = {"cpu": catalog.Variant("cpu", "wasm", "q8", {"onnx/model_quantized.onnx": model_bytes - 1 - data})}
     if gpu_bytes is not None:
         variants["gpu"] = catalog.Variant("gpu", "webgpu", "q4f16", {"onnx/model_q4f16.onnx": gpu_bytes - 1})
     entry = catalog.Entry(Path(f"{entry_id}.yaml"), entry_id, f"org/{entry_id}", "0" * 40, license,
                           "org/source", languages, {"config.json": 1}, variants, ())
-    params = {"pooling": "mean", "prefix": ""} if kind == "embed-centroid" else {}
+    params = {"pooling": "mean", "prefix": "", "dimensions": DIMENSIONS} if kind == "embed-centroid" else {}
     return catalog.Candidate(entry, catalog.Recipe("classify", kind, params))
 
 
@@ -87,13 +93,20 @@ class FakeBench:
         answer = self.answers[candidate.entry.id]
         if isinstance(answer, BaseException):
             raise answer
+        # A model of the real catalog returns as many numbers as the catalog says: pad the two
+        # axes of the fake vectors with zeros, which keeps their length and their angles.
+        promised = candidate.recipe.params.get("dimensions")
+        if isinstance(answer, np.ndarray) and promised and self.pad and answer.shape[1] < promised:
+            answer = np.pad(answer, ((0, 0), (0, promised - answer.shape[1])))
         return answer
+
+    pad = True
 
 
 def run(candidates, answers, *, config: Config | None = None, examples: Examples | None = None, **options):
     bench = FakeBench(answers)
     result = select(config or settings(), examples or examples_of(), candidates, bench,
-                    engine_bytes=ENGINE, **options)
+                    engine_sizes=ENGINE_SIZES, **options)
     return result, bench
 
 
@@ -134,13 +147,46 @@ def test_the_weight_is_the_model_and_the_engine_and_is_told_in_every_outcome():
     assert [outcome.size_bytes for outcome in result.outcomes] == [13 * MB, 401 * MB]
 
 
-def test_the_weight_of_a_model_with_two_variants_is_the_heavier_one():
+def test_the_weight_of_a_model_with_two_variants_is_that_of_the_processors_variant():
+    # The device is not known before the build, and the processor's variant is the one every
+    # visitor can run, so the graphics card's variant does not count, heavy or light.
     candidates = [make("both", 10 * MB, gpu_bytes=50 * MB), make("plain", 30 * MB)]
 
     result, bench = run(candidates, {"plain": vectors(), "both": vectors()})
 
-    assert [outcome.candidate.entry.id for outcome in result.outcomes] == ["plain", "both"]
-    assert result.outcomes[1].size_bytes == 51 * MB
+    assert [outcome.candidate.entry.id for outcome in result.outcomes] == ["both", "plain"]
+    assert result.outcomes[0].size_bytes == 11 * MB
+
+
+def test_the_weight_is_the_one_definition_of_the_build_and_counts_the_centres_of_the_labels():
+    # selection.first_load_bytes is bundle.first_load of the manifest of a build: the engine, the
+    # centres (four bytes for every number of every label), the files of the model and nothing else.
+    candidate = make("m", 10 * MB)
+    for names in (("a", "b"), ("a", "b", "c"), tuple("abcdefg")):
+        labels = [Label(name) for name in names]
+        model = sum(candidate.entry.files().values())
+        centres = 4 * len(names) * DIMENSIONS
+
+        assert selection.first_load_bytes(candidate, labels, ENGINE_SIZES) == ENGINE + model + centres
+
+        manifest = bundle.manifest_of(candidate, labels, centres, engine_sizes=ENGINE_SIZES)
+        assert bundle.first_load(manifest, "cpu")[0] == ENGINE + model + centres
+
+
+def test_a_vector_of_another_length_than_the_catalog_says_does_not_pass():
+    # The weight was computed from `dimensions`; a model that returns another length would sit
+    # under the limit with a wrong weight, so it is refused with the numbers named.
+    bench = FakeBench({"liar": vectors(), "honest": vectors()})
+    bench.pad = False
+    liar = make("liar", 10 * MB)
+    wrong = catalog.Candidate(liar.entry, catalog.Recipe("classify", "embed-centroid",
+                                                         {**liar.recipe.params, "dimensions": 384}))
+
+    result = select(settings(), examples_of(), [wrong, make("honest", 20 * MB)], bench,
+                    engine_sizes=ENGINE_SIZES)
+
+    assert verdicts(result) == {"liar": Verdict.VECTORS, "honest": Verdict.PASSED}
+    assert "the catalog says 384 numbers to a vector, the bench returned 2" in result.outcomes[0].message
 
 
 def test_equal_weights_keep_the_order_of_the_catalog_and_the_recipes_of_one_model():
