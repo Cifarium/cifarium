@@ -198,6 +198,7 @@ class FakeChrome:
     def __init__(self, ms: float = 10.0, single_thread: Exception | None = None) -> None:
         self.ms = ms
         self.single_thread = single_thread
+        self.ignores_threads = False
         self.jobs: list[dict] = []
 
     def run(self, job: dict, *, timeout: float) -> dict:
@@ -209,7 +210,8 @@ class FakeChrome:
         times = [3 * self.ms] + [self.ms * (2 if job.get("threads") == 1 else 1)] * (len(rows) - 1)
         return {"count": len(rows), "dims": len(TOPICS), "loadMs": 500.0, "timesMs": times,
                 "vectors": base64.b64encode(rows.tobytes()).decode("ascii"),
-                "threads": job.get("threads", 4), "crossOriginIsolated": True, "events": []}
+                "threads": 4 if self.ignores_threads else job.get("threads", 4),
+                "crossOriginIsolated": True, "events": []}
 
 
 @pytest.fixture
@@ -301,6 +303,16 @@ def test_a_failed_single_thread_run_changes_nothing_but_the_line(tmp_path, chrom
     out, _ = capsys.readouterr()
     assert code == 0
     assert "one thread    not measured: The job exceeded its time limit of 300 s." in out
+
+
+def test_a_page_that_ignores_one_thread_is_not_taken_for_a_single_thread_measurement(tmp_path, chrome, capsys):
+    chrome.ignores_threads = True
+
+    code = build.run(write_task(tmp_path))
+
+    out, _ = capsys.readouterr()
+    assert code == 0
+    assert "one thread    not measured: asked the page for 1 thread, it computed in 4" in out
 
 
 @pytest.mark.parametrize(

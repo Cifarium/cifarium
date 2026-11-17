@@ -201,7 +201,11 @@ class ChromeEmbed:
     def single_thread(self, candidate: catalog.Candidate, texts: Sequence[str]) -> Speed:
         """Times of the candidate in one thread, on the first :data:`SINGLE_THREAD_INPUTS` texts."""
         job = embed_job(candidate.entry, candidate.recipe, texts[:SINGLE_THREAD_INPUTS], threads=1)
-        return Speed.of(self.bench.run(job, timeout=TIME_LIMIT_S))
+        speed = Speed.of(self.bench.run(job, timeout=TIME_LIMIT_S))
+        if speed.threads != 1:
+            # The page reports what the engine used; anything else means the job's field was lost.
+            raise BenchError(f"asked the page for 1 thread, it computed in {speed.threads}")
+        return speed
 
 
 def download(entry: catalog.Entry, say: Callable[[str], None]) -> None:
