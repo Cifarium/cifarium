@@ -38,6 +38,16 @@ LIBRARY_FILE = "transformers.min.js"
 WASM_LOADER_FILE = "ort-wasm-simd-threaded.asyncify.mjs"
 WASM_BINARY_FILE = "ort-wasm-simd-threaded.asyncify.wasm"
 
+# Size in bytes of each engine file, which a visitor downloads on the first visit together with
+# the model (ARCHITECTURE.md, section 1.2). The tarballs below are pinned by their sha512, so the
+# sizes are fixed for these versions. Change them together with the versions; a test compares
+# them with the files on disk.
+ENGINE_BYTES = {
+    LIBRARY_FILE: 587_917,
+    WASM_LOADER_FILE: 53_057,
+    WASM_BINARY_FILE: 26_861_777,
+}
+
 
 class VendorError(RuntimeError):
     """Engine files could not be downloaded or failed verification."""
@@ -83,6 +93,11 @@ ENGINE_PACKAGES: tuple[NpmPackage, ...] = (
 
 def _open_url(url: str) -> BinaryIO:
     return urllib.request.urlopen(url, timeout=60)
+
+
+def engine_bytes() -> int:
+    """Weight of the engine on a visitor's first visit, in bytes."""
+    return sum(ENGINE_BYTES.values())
 
 
 def engine_dir(cache: Path | None = None) -> Path:

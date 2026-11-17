@@ -53,6 +53,20 @@ def test_tarball_urls_match_the_registry():
     )
 
 
+def test_the_engine_weight_lists_the_files_the_packages_provide():
+    provided = {name for package in vendor.ENGINE_PACKAGES for name in package.files}
+
+    assert set(vendor.ENGINE_BYTES) == provided
+    assert vendor.engine_bytes() == sum(vendor.ENGINE_BYTES.values())
+
+
+@pytest.mark.e2e
+def test_the_engine_weight_matches_the_files_of_the_pinned_version():
+    folder = vendor.ensure_engine()
+
+    assert {name: (folder / name).stat().st_size for name in vendor.ENGINE_BYTES} == vendor.ENGINE_BYTES
+
+
 def test_fetch_copies_only_the_listed_files(tmp_path):
     tarball = make_tarball(
         {
