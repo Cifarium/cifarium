@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import statistics
 import sys
 from collections.abc import Mapping, Sequence
@@ -419,8 +420,12 @@ def run(
     return exitcodes.DONE
 
 
-def _prepare(folder: str | Path | None, examples: str | Path | None, hosting_name: str):
-    """Everything the command reads before it starts a browser. Nothing here needs Chrome."""
+def _prepare(
+    folder: str | Path | None, examples: str | Path | None, hosting_name: str
+) -> tuple[Folder, example_files.Examples, hosting.HeadersOf, bool]:
+    """Everything the command reads before it starts a browser: the folder, the examples, the
+    headers of the hosting file, and whether the examples are those of the settings (the build has
+    seen them). Nothing here needs Chrome."""
     settings = _settings() if folder is None or examples is None else None
     folder_path = Path(folder) if folder is not None else settings.output
     info = read_folder(folder_path)
@@ -471,8 +476,6 @@ def describe_misses(items: Sequence[example_files.Example], labels: Sequence[str
 
 def _shown(folder: Path) -> str:
     """The folder as the user can type it: relative to the current folder when it lies inside."""
-    import os
-
     path = os.path.abspath(folder)
     try:
         inside = os.path.commonpath([path, os.getcwd()]) == os.getcwd()
