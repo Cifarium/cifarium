@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from publishable import example_leaks
 
 from cifarium import build, bundle, catalog, cli, exitcodes, hub, vendor
 from cifarium.bench import BenchError
@@ -237,6 +238,7 @@ class Written:
     candidate: catalog.Candidate
     labels: list[Label]
     centres: np.ndarray
+    reports: dict[str, bytes]
 
     @property
     def names(self) -> list[str]:
@@ -256,7 +258,8 @@ def chrome(monkeypatch):
         yield fake
 
     def fake_write(folder, candidate, labels, centres, **kwargs):
-        written.append(Written(Path(folder), candidate, list(labels), np.array(centres)))
+        written.append(Written(Path(folder), candidate, list(labels), np.array(centres),
+                               dict(kwargs.get("reports") or {})))
         return bundle.Built(Path(folder), {}, ("cifarium.json", "index.html"), fake.removed,
                             first_load_bytes=51_200_000, size_bytes=52_000_000)
 
@@ -399,6 +402,132 @@ def test_run_goes_past_slow_models_and_fails_when_none_is_fast_enough(tmp_path, 
     ran = [job["model"] for job in chrome.jobs]
     assert len(ran) == len(set(ran)) > 1
     assert out.count(f"  {LATENCY}  ") == len(ran)
+
+
+# --- the report, which the folder gets or which a refusal leaves behind ---------------------------------
+
+
+def texts_of(folder: Path) -> list[str]:
+    return [json.loads(line)["input"] for line in (folder / "examples.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_run_hands_both_files_of_the_report_to_the_folder_with_the_weight_of_its_manifest(tmp_path, chrome, capsys):
+    code = build.run(write_task(tmp_path, "limits:\n  max_latency_ms: 15\n"))
+
+    out, err = capsys.readouterr()
+    assert code == 0, err
+    [written] = chrome.written
+    assert set(written.reports) == {"report.json", "report.md"}
+    document = json.loads(written.reports["report.json"])
+    assert (document["outcome"], document["exitCode"]) == ("built", 0)
+    assert document["settings"]["limits"] == {"maxSizeMb": 300, "maxLatencyMs": 15}
+    assert document["device"] == {"browser": {"name": "Chrome", "version": 157, "headless": True}, "webgpu": None,
+                                  "threads": 4, "crossOriginIsolated": True}
+    chosen = document["chosen"]
+    assert chosen["id"] == "all-minilm-l6-v2" and chosen["model"] == "Xenova/all-MiniLM-L6-v2"
+    # The weight is that of the manifest the folder gets, which is the number of the table.
+    manifest = bundle.manifest_of(written.candidate, written.labels, written.centres.astype("<f4").nbytes)
+    assert chosen["firstLoad"]["bytes"] == bundle.first_load(manifest, "cpu")[0]
+    row = next(row for row in document["candidates"] if row["id"] == "all-minilm-l6-v2")
+    assert row["verdict"] == "passed" and row["firstLoadBytes"] == chosen["firstLoad"]["bytes"]
+    assert row["evaluation"]["correct"] == row["evaluation"]["total"] == 12
+    assert chosen["oneThread"]["medianMs"] == 20.0 and chosen["oneThreadError"] is None
+    assert "report.md says why each model was taken or not" in out
+    # The report is made of the same numbers the console showed.
+    assert [row["id"] for row in document["candidates"]] == [
+        candidate.entry.id for candidate in selection_order(written.labels)]
+
+
+def selection_order(labels):
+    from cifarium import selection
+    return selection.ordered(catalog.candidates("classify"), labels)
+
+
+def test_the_report_of_a_run_holds_no_text_of_an_example(tmp_path, chrome, capsys):
+    write_task(tmp_path, extra=(("доставка: a question about shipping", "technical"),))
+
+    code = build.run(tmp_path / "cifarium.yaml")
+
+    assert code == 0, capsys.readouterr().err
+    [written] = chrome.written
+    folder = tmp_path / "published"
+    bundle.write_reports(folder, written.reports)
+    # A miss is there, by its line (13) and its labels, and so is every file of the report.
+    assert '"line": 13' in written.reports["report.json"].decode("utf-8")
+    assert example_leaks(folder, texts_of(tmp_path)) == []
+
+
+def test_a_refusal_writes_its_report_into_output_and_ends_with_code_1(tmp_path, chrome, capsys):
+    code = build.run(write_task(tmp_path, "license: permissive\nlimits:\n  max_latency_ms: 5\n"))
+
+    out, err = capsys.readouterr()
+    assert code == exitcodes.NO_MODEL == 1
+    assert "FAILED: no model passed" in err
+    folder = tmp_path / "cifarium-out"
+    assert sorted(path.name for path in folder.iterdir()) == ["report.json", "report.md"]
+    assert chrome.written == []
+    document = json.loads((folder / "report.json").read_text(encoding="utf-8"))
+    assert (document["outcome"], document["exitCode"], document["chosen"]) == ("no-model", 1, None)
+    verdicts = {row["id"]: row["verdict"] for row in document["candidates"]}
+    assert {candidate.entry.id for candidate in catalog.candidates("classify")} == set(verdicts)
+    assert LATENCY in verdicts.values() and "license" in verdicts.values()
+    assert "No model passed" in (folder / "report.md").read_text(encoding="utf-8")
+    assert f"The report is in {build._shown(folder)}: report.md for you, report.json for scripts." in out
+    assert "Wrote " not in out and "earlier build" not in out
+    assert example_leaks(folder, texts_of(tmp_path)) == []
+
+
+def test_a_refusal_leaves_the_folder_of_an_earlier_build_as_it_was_and_says_so(tmp_path, chrome, capsys):
+    folder = tmp_path / "cifarium-out"
+    folder.mkdir()
+    (folder / "cifarium.json").write_text('{"format": 1}', encoding="utf-8")
+    (folder / "index.html").write_text("<p>mine</p>", encoding="utf-8")
+    (folder / "report.json").write_text("an older report", encoding="utf-8")
+
+    code = build.run(write_task(tmp_path, "limits:\n  max_latency_ms: 5\n"))
+
+    out, _ = capsys.readouterr()
+    assert code == 1
+    assert (folder / "cifarium.json").read_text(encoding="utf-8") == '{"format": 1}'
+    assert (folder / "index.html").read_text(encoding="utf-8") == "<p>mine</p>"
+    assert json.loads((folder / "report.json").read_text(encoding="utf-8"))["outcome"] == "no-model"
+    assert f"{build._shown(folder)} also holds the folder of an earlier build: this run did not change it." in out
+
+
+def test_a_refusal_whose_report_cannot_be_written_is_code_3_and_not_1(tmp_path, chrome, monkeypatch, capsys):
+    def fail(folder, reports):
+        raise bundle.BundleError("cannot write the folder: Access is denied")
+
+    monkeypatch.setattr(bundle, "write_reports", fail)
+
+    code = build.run(write_task(tmp_path, "limits:\n  max_latency_ms: 5\n"))
+
+    out, err = capsys.readouterr()
+    assert code == exitcodes.ENVIRONMENT == 3
+    assert "FAILED: cannot write the folder: Access is denied" in err and "no model passed" not in err
+    assert "Every candidate:" in out, "the table is on the console whatever happens to the file"
+    assert "The report is in" not in out
+
+
+def test_an_output_that_is_a_file_is_a_mistake_of_the_settings_before_anything_runs(tmp_path, chrome, capsys):
+    (tmp_path / "cifarium-out").write_text("in the way", encoding="utf-8")
+
+    code = build.run(write_task(tmp_path))
+
+    _, err = capsys.readouterr()
+    assert code == exitcodes.BAD_INPUT == 2 and "cifarium-out" in err
+    assert chrome.jobs == [] and (tmp_path / "cifarium-out").read_text(encoding="utf-8") == "in the way"
+
+
+def test_a_build_that_fails_before_the_selection_ends_writes_no_report(tmp_path, chrome, monkeypatch, capsys):
+    def fail(*args, **kwargs):
+        raise vendor.VendorError("Could not download onnxruntime-web: offline")
+
+    monkeypatch.setattr(vendor, "ensure_engine", fail)
+
+    assert build.run(write_task(tmp_path)) == 3
+    assert not (tmp_path / "cifarium-out").exists()
+    capsys.readouterr()
 
 
 def test_run_warns_when_one_thread_misses_the_limit(tmp_path, chrome, capsys):

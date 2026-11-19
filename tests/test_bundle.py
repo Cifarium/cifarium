@@ -27,6 +27,10 @@ LABELS = ["shipping", "returns", "technical"]
 CENTRES = np.eye(3)
 
 
+REPORTS = {bundle.REPORT_JSON: b'{"format": 1}\n', bundle.REPORT_MARKDOWN: b"# cifarium build report\n"}
+"""Stand-ins for the files of the report (tests/test_report.py has the real ones): the folder of
+a build always carries both."""
+
 APACHE = "Apache License\nVersion 2.0, January 2004\nTEST-APACHE-BODY $notaplaceholder\n"
 MIT = "MIT License\n\nCopyright (c) Test Corporation\nTEST-MIT-BODY\n"
 
@@ -64,6 +68,7 @@ class Sources:
     def write(self, folder: Path, who: catalog.Candidate | None = None, names=LABELS, centres=CENTRES, **more):
         """``names`` are plain names or Label objects, in the order of the settings."""
         labels = [name if isinstance(name, Label) else Label(name) for name in names]
+        more.setdefault("reports", REPORTS)
         return bundle.write(folder, who or candidate(), labels, centres, engine_dir=self.engine,
                             model_dir=self.model, engine_sizes=ENGINE_SIZES, **more)
 
@@ -95,6 +100,7 @@ def test_the_folder_has_the_files_of_section_7(sources, out):
     model = f"models/{REVISION}/org/tiny/"
     assert tree(out) == {
         "index.html", "cifarium.js", "cifarium-worker.js", "cifarium.json", "LICENSES.txt",
+        "report.json", "report.md",
         engine + vendor.LIBRARY_FILE, engine + vendor.WASM_LOADER_FILE, engine + vendor.WASM_BINARY_FILE,
         model + "config.json", model + "tokenizer.json", model + "tokenizer_config.json",
         model + "onnx/model_quantized.onnx",
@@ -437,6 +443,104 @@ def test_a_failed_rebuild_leaves_the_old_manifest_and_files_in_place(sources, ou
 
     assert (out / "cifarium.json").read_bytes() == manifest
     assert (out / f"models/{REVISION}/org/tiny/config.json").is_file()
+
+
+# --- the report files ----------------------------------------------------------------------------------
+
+
+def test_the_folder_owns_the_two_report_names_and_a_rebuild_writes_them_again(sources, out):
+    first = sources.write(out)
+    assert {"report.json", "report.md"} <= bundle.owned(first.manifest)
+    (out / "report.md").write_text("an older report", encoding="utf-8")
+    (out / "report.json").write_text("{}", encoding="utf-8")
+
+    # Another model: its files replace the old ones, and the reports are the new build's.
+    second = sources.write(out, candidate("b" * 40), reports={"report.json": b"[]\n", "report.md": b"new\n"})
+
+    assert (out / "report.json").read_bytes() == b"[]\n" and (out / "report.md").read_bytes() == b"new\n"
+    assert "report.json" in second.files and "report.md" in second.files
+    assert not any(name.startswith("report") for name in second.removed)
+
+
+def test_a_build_given_no_report_leaves_the_one_of_an_earlier_build_and_does_not_list_it(sources, out):
+    sources.write(out)
+
+    built = sources.write(out, reports={})
+
+    assert (out / "report.json").read_bytes() == REPORTS["report.json"]
+    assert "report.json" not in built.files and "report.md" not in built.files
+    assert built.size_bytes == sum((out / name).stat().st_size for name in built.files)
+    assert built.removed == ()
+
+
+def test_the_report_is_written_before_the_manifest_which_stays_the_last_file(sources, out, monkeypatch):
+    order: list[str] = []
+    real = bundle._write_bytes
+
+    def spy(path, data):
+        order.append(path.name)
+        real(path, data)
+
+    monkeypatch.setattr(bundle, "_write_bytes", spy)
+
+    sources.write(out)
+
+    assert order[-1] == "cifarium.json"
+    assert {"report.json", "report.md"} <= set(order[:-1])
+
+
+def test_a_report_that_cannot_be_written_leaves_the_old_manifest_and_is_a_bundle_error(sources, out, monkeypatch):
+    sources.write(out)
+    manifest = (out / "cifarium.json").read_bytes()
+    real = bundle._write_bytes
+
+    def fail_on_report(path, data):
+        if path.name == "report.md":
+            raise PermissionError(13, "Permission denied")
+        real(path, data)
+
+    monkeypatch.setattr(bundle, "_write_bytes", fail_on_report)
+
+    with pytest.raises(bundle.BundleError, match="Permission denied"):
+        sources.write(out, candidate("b" * 40))
+
+    assert (out / "cifarium.json").read_bytes() == manifest
+
+
+def test_only_the_files_of_the_report_may_be_given_to_write(sources, out):
+    with pytest.raises(ValueError, match="not files of the report"):
+        sources.write(out, reports={"report.json": b"{}", "index.html": b"x"})
+    with pytest.raises(ValueError, match="not files of the report"):
+        bundle.write_reports(out, {"cifarium.json": b"{}"})
+    assert not out.exists()
+
+
+def test_write_reports_makes_the_folder_and_touches_nothing_else(sources, out):
+    names = bundle.write_reports(out, REPORTS)
+
+    assert sorted(names) == ["report.json", "report.md"] and tree(out) == {"report.json", "report.md"}
+    assert not list(out.rglob("*.part"))
+    # An earlier build next to it stays as it was, report and all.
+    sources.write(out)
+    before = snapshot(out)
+    bundle.write_reports(out, {"report.md": b"# no model passed\n"})
+    after = snapshot(out)
+    assert after.pop("report.md") == b"# no model passed\n" and before.pop("report.md") == REPORTS["report.md"]
+    assert after == before
+
+
+def test_write_reports_refuses_a_file_where_the_folder_should_be_and_says_how_it_failed(tmp_path):
+    taken = tmp_path / "cifarium-out"
+    taken.write_text("a file", encoding="utf-8")
+
+    with pytest.raises(bundle.BundleError, match="is a file, not a folder"):
+        bundle.write_reports(taken, REPORTS)
+    assert taken.read_text(encoding="utf-8") == "a file"
+
+    blocked = tmp_path / "blocked.txt"
+    blocked.write_text("x", encoding="utf-8")
+    with pytest.raises(bundle.BundleError, match="cannot write"):
+        bundle.write_reports(blocked / "inside", REPORTS)
 
 
 def test_stale_is_what_the_old_build_had_and_the_new_one_has_not():

@@ -15,8 +15,9 @@ from pathlib import Path
 
 import pytest
 from test_bundle import GRAPH, MODEL_FILES, Sources, fill, fill_engine
+from test_report import success as sample_report
 
-from cifarium import bundle, catalog, cli, config, exitcodes, paths
+from cifarium import build, bundle, catalog, cli, config, exitcodes, paths, report, selection
 
 RUNTIME = paths.web_dir() / "runtime"
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,8 +46,94 @@ def key_paths(value, prefix: str = "") -> list[str]:
                 found.append(here)
     elif isinstance(value, list):
         for item in value:
-            found.extend(key_paths(item, prefix + "[]"))
+            if isinstance(item, (dict, list)):
+                found.extend(key_paths(item, prefix + "[]"))
+            else:
+                found.append(prefix + "[]")  # a list of plain values: the list is the key
     return sorted(set(found))
+
+
+REPORT_KEYS = [
+    "candidates[].evaluation.accuracy",
+    "candidates[].evaluation.correct",
+    "candidates[].evaluation.margin",
+    "candidates[].evaluation.misses[].expected",
+    "candidates[].evaluation.misses[].expectedScore",
+    "candidates[].evaluation.misses[].line",
+    "candidates[].evaluation.misses[].predicted",
+    "candidates[].evaluation.misses[].score",
+    "candidates[].evaluation.total",
+    "candidates[].firstLoadBytes",
+    "candidates[].id",
+    "candidates[].license",
+    "candidates[].model",
+    "candidates[].reason",
+    "candidates[].recipe",
+    "candidates[].speed.calls",
+    "candidates[].speed.crossOriginIsolated",
+    "candidates[].speed.firstMs",
+    "candidates[].speed.loadMs",
+    "candidates[].speed.medianMs",
+    "candidates[].speed.p95Ms",
+    "candidates[].speed.threads",
+    "candidates[].verdict",
+    "chosen.dtype",
+    "chosen.firstLoad.bytes",
+    "chosen.firstLoad.dataBytes",
+    "chosen.firstLoad.engineBytes",
+    "chosen.firstLoad.modelBytes",
+    "chosen.id",
+    "chosen.license",
+    "chosen.model",
+    "chosen.oneThread.calls",
+    "chosen.oneThread.firstMs",
+    "chosen.oneThread.medianMs",
+    "chosen.oneThread.p95Ms",
+    "chosen.oneThreadError",
+    "chosen.recipe",
+    "chosen.revision",
+    "chosen.variant",
+    "cifarium",
+    "device.browser.headless",
+    "device.browser.name",
+    "device.browser.version",
+    "device.crossOriginIsolated",
+    "device.threads",
+    "device.webgpu.architecture",
+    "device.webgpu.isFallbackAdapter",
+    "device.webgpu.vendor",
+    "examples.count",
+    "examples.file",
+    "examples.labels[]",
+    "exitCode",
+    "format",
+    "outcome",
+    "settings.file",
+    "settings.host",
+    "settings.license",
+    "settings.limits.maxLatencyMs",
+    "settings.limits.maxSizeMb",
+    "settings.passRate",
+    "task",
+]
+"""The keys of `report.json` as paths (ARCHITECTURE.md, section 14); the sample has every key a
+report can have. A change here is a change of the contract and goes with a line in CHANGELOG.md."""
+
+
+def report_key_paths(document) -> list[str]:
+    """The keys of a report as paths. A key that is null in one row and an object in another is the
+    object's: the null leaf is dropped when a longer path starts with it."""
+    found = key_paths(document)
+    return [path for path in found if not any(other.startswith((path + ".", path + "[]")) for other in found)]
+
+
+def unknown_report_keys(document) -> list[str]:
+    """The keys of a real report that the contract does not have. A key that is null in this report
+    (no adapter, no model chosen, a candidate that never ran) is known when the contract has keys
+    below it."""
+    return [path for path in report_key_paths(document)
+            if path not in REPORT_KEYS
+            and not any(known.startswith((path + ".", path + "[]")) for known in REPORT_KEYS)]
 
 
 def source(name: str) -> str:
@@ -120,6 +207,36 @@ def test_the_manifest_has_the_format_and_the_version_first_and_is_json_with_utf8
     raw = (out / "cifarium.json").read_bytes()
     assert raw.endswith(b"\n") and b"\r" not in raw
     assert list(json.loads(raw))[:2] == ["format", "cifarium"]
+
+
+def test_the_keys_of_the_report_are_the_contract():
+    # The sample has a model chosen, one that ran too slow, one that fell short with its misses, a
+    # one-thread run and an adapter. `chosen` and `evaluation` are null for a refusal and for a
+    # candidate that never ran; `oneThread` is null when it was not measured.
+    assert report_key_paths(sample_report()) == REPORT_KEYS
+
+
+def test_every_key_of_the_report_is_written_in_camel_case():
+    for path in report_key_paths(sample_report()):
+        for key in re.split(r"\.|\[\]", path):
+            assert key == "" or re.fullmatch(r"[a-z][a-zA-Z0-9]*", key), path
+
+
+def test_the_report_has_the_format_and_the_version_first_and_is_json_with_utf8_text():
+    raw = report.json_text(sample_report())
+
+    assert raw.endswith(b"\n") and b"\r" not in raw
+    assert list(json.loads(raw))[:2] == ["format", "cifarium"]
+    assert json.loads(raw)["format"] == report.FORMAT == 1
+
+
+def test_the_words_of_the_verdicts_and_of_the_outcome_are_the_contract():
+    # `candidates[].verdict` is one of these; `outcome` is one of the last two; `latency` lives in `build`.
+    assert [verdict.value for verdict in selection.Verdict] == [
+        "passed", "license", "size", "language", "recipe", "accuracy", "vectors", "bench", "not-tried"]
+    assert build.LATENCY == "latency"
+    assert (report.BUILT, report.NO_MODEL) == ("built", "no-model")
+    assert (bundle.REPORT_JSON, bundle.REPORT_MARKDOWN) == ("report.json", "report.md")
 
 
 def test_the_runtime_describes_the_manifest_it_reads_with_the_keys_the_build_writes():
@@ -288,3 +405,4 @@ def test_the_changelog_exists_and_names_the_rule_of_compatibility():
 
     assert text.startswith("# Changelog")
     assert "section 14" in text or "Section 14" in text
+    assert "report.json" in text and "report.md" in text

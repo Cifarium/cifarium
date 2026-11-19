@@ -33,6 +33,11 @@ MANIFEST = "cifarium.json"
 RUNTIME_FILES = ("cifarium.js", "cifarium-worker.js")
 PAGE = "index.html"
 LICENSES = "LICENSES.txt"
+REPORT_JSON = "report.json"
+REPORT_MARKDOWN = "report.md"
+REPORT_FILES = (REPORT_JSON, REPORT_MARKDOWN)
+"""The report of the build, for programs and for people (:mod:`report`). The folder owns both names,
+so a rebuild writes them again, but only the files :func:`write` was given are written."""
 HOSTING_FILES = ("_headers", "vercel.json", "nginx.conf")
 ENGINE_FILES = {
     "library": vendor.LIBRARY_FILE,
@@ -81,6 +86,7 @@ def write(
     engine_dir: Path | None = None,
     model_dir: Path | None = None,
     engine_sizes: Mapping[str, int] = vendor.ENGINE_BYTES,
+    reports: Mapping[str, bytes] | None = None,
 ) -> Built:
     """Write the build of ``candidate`` into ``folder`` and return what is there now.
 
@@ -92,11 +98,16 @@ def write(
     replace it); a file whose size is not the one the catalog or the pinned engine names is an
     error, because the manifest promises these sizes to the runtime.
 
+    ``reports`` are the files of the report by name (:data:`REPORT_FILES`), made by :mod:`report`
+    before the folder is written; they are written with the other files, before the manifest. A
+    report that is not given is not written, and an older one in the folder is left as it is.
+
     The same input gives the same bytes in every file, with no time or path in them. The
     manifest is written after everything it names, so a page that reads it while the build
     runs sees the old build or the new one. Files of the previous build that the new one does
     not name are deleted at the end; see :func:`stale`.
     """
+    reports = _checked_reports(reports)
     entry, recipe = candidate.entry, candidate.recipe
     labels = list(labels)
     names = [label.name for label in labels]
@@ -137,6 +148,8 @@ def write(
         for name in HOSTING_FILES:
             _write_bytes(folder / "hosting" / name, (templates / "hosting" / name).read_bytes())
         _write_bytes(folder / LICENSES, licenses_text(manifest, entry, engine_dir))
+        for name, data in reports.items():
+            _write_bytes(folder / name, data)
         _write_bytes(folder / MANIFEST, _manifest_text(manifest))
 
         now = owned(manifest)
@@ -144,9 +157,36 @@ def write(
     except OSError as error:
         raise BundleError(f"cannot write {folder}: {error.strerror or error}") from error
 
-    ordered = tuple(sorted(now))
+    # The folder owns both report names, but a file of an earlier build is not a file of this one.
+    ordered = tuple(sorted(name for name in now if name not in REPORT_FILES or name in reports))
     total, _ = first_load(manifest, variants[0])
     return Built(folder, manifest, ordered, removed, total, sum((folder / name).stat().st_size for name in ordered))
+
+
+def write_reports(folder: Path, reports: Mapping[str, bytes]) -> tuple[str, ...]:
+    """Write only the files of the report into ``folder``, which is made if it is not there. This is
+    the end of a build that chose no model: there is no folder to write, but the table of reasons
+    must reach the developer and a script. Nothing else in the folder is touched, so a build of an
+    earlier run stays as it was. Returns the names written; :class:`BundleError` when the folder
+    cannot be used."""
+    reports = _checked_reports(reports)
+    folder = Path(folder)
+    if folder.exists() and not folder.is_dir():
+        raise BundleError(f"{folder} is a file, not a folder: change `output` in the settings")
+    try:
+        for name, data in reports.items():
+            _write_bytes(folder / name, data)
+    except OSError as error:
+        raise BundleError(f"cannot write {folder}: {error.strerror or error}") from error
+    return tuple(reports)
+
+
+def _checked_reports(reports: Mapping[str, bytes] | None) -> dict[str, bytes]:
+    found = dict(reports or {})
+    unknown = sorted(set(found) - set(REPORT_FILES))
+    if unknown:
+        raise ValueError(f"{unknown} are not files of the report, which are {list(REPORT_FILES)}")
+    return found
 
 
 def manifest_of(
@@ -229,7 +269,8 @@ def first_load(manifest: Mapping[str, Any], variant: str) -> tuple[int, set[str]
 
 def owned(manifest: Mapping[str, Any]) -> set[str]:
     """Every file a build with this manifest writes: the ones it names and the fixed ones."""
-    files = {MANIFEST, PAGE, LICENSES, *RUNTIME_FILES, *(f"hosting/{name}" for name in HOSTING_FILES)}
+    files = {MANIFEST, PAGE, LICENSES, *REPORT_FILES, *RUNTIME_FILES,
+             *(f"hosting/{name}" for name in HOSTING_FILES)}
     files.update(manifest["engine"][role]["path"] for role in ENGINE_FILES)
     files.update(ref["path"] for ref in manifest["data"].values())
     folder = manifest["model"]["path"] + manifest["model"]["repo"] + "/"

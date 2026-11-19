@@ -59,3 +59,13 @@ The first contracts. Nothing was published before, so nothing is a break.
   now be taken or refused the other way.
 - `LICENSES.txt` holds the full texts of Apache-2.0 (Transformers.js and the cifarium runtime) and
   MIT (ONNX Runtime) and, for a model whose license is not permissive, the notice its terms ask for.
+- `report.md` for people and `report.json` for programs, in the folder `build` writes and, when no
+  model fits (exit code 1), alone in `output`. `report.json`, format 1: `format` and `cifarium` come
+  first, every key is in camel case. It has `outcome` (`built` or `no-model`), `exitCode`, the
+  `settings` and `examples` it ran on, the `device` (Chrome version, adapter kind, threads,
+  isolation), every candidate in the order of the walk (`candidates[]`: `verdict`, one of `passed`,
+  `latency`, `license`, `size`, `language`, `recipe`, `accuracy`, `vectors`, `bench`, `not-tried`; a
+  `reason` for people; the weight of the first load; the share, the `margin` over the pass rate,
+  which is negative for a model that fell short, and the misses by line of the examples file; the
+  times) and, for the chosen model, the weight of the first load by parts and its one-thread run.
+  The keys of `report.md` are not a contract. Neither file holds the text of an example.

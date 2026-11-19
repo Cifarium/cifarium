@@ -9,6 +9,8 @@ chosen model is run once more in a single thread, on a few examples, to show wha
 without the isolation headers gets. ARCHITECTURE.md, section 9 (``build``), has the choices.
 
 The result is printed and the folder for the site is written to ``output`` by :mod:`bundle`.
+Whether a model was chosen or not, ``report.md`` and ``report.json`` (:mod:`report`) go to
+``output`` too: the table of reasons is what a developer and a script have left of a refusal.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from typing import Any
 import numpy as np
 
 from . import bundle, catalog, config, evaluate, examples, exitcodes, hub, selection, vendor
+from . import report as reporting
 from .bench import Bench, BenchError, decode_vectors, embed_job, open_bench
 from .selection import BYTES_PER_MB, Outcome, Verdict
 
@@ -257,6 +260,7 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
              f"onnxruntime-web {vendor.ORT_WEB_VERSION}")
         with open_bench(headed=headed) as bench:
             _say(f"  browser   {describe_browser(bench)}")
+            device = reporting.device_of(bench.device, bench.headless)
             _say("\nCandidates on the bench, the lightest first:")
             embed = ChromeEmbed(bench, _say)
             result = choose(settings, items, candidates, embed, embed.speed, report=_report)
@@ -278,6 +282,15 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
         _say(f"  {line}")
     if chosen is None:
         _say("\nNo model was chosen: the table says why each one was not taken.")
+        try:
+            # The refusal has no folder, but the table must outlive the console: it goes to `output`.
+            bundle.write_reports(settings.output, reporting.files(
+                reporting.of_build(settings, items, result, device=device)))
+        except bundle.BundleError as error:
+            print(f"\nFAILED: {error}", file=sys.stderr)
+            return exitcodes.ENVIRONMENT
+        for line in describe_refusal(settings.output):
+            _say(line)
         print("\nFAILED: no model passed. More examples per label, a lower `pass_rate`, wider "
               "`limits` or `license: any` in the settings may let one through.", file=sys.stderr)
         return exitcodes.NO_MODEL
@@ -288,8 +301,14 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
     assert result.vectors is not None
     names = [label.name for label in items.labels]
     centres = evaluate.centroids(result.vectors, [item.expected for item in items.items], names)
+    # The manifest the folder will get, from the same function that writes it: the report names the
+    # weight of the first load by its parts, and they are the folder's.
+    manifest = bundle.manifest_of(chosen.outcome.candidate, items.labels,
+                                  np.asarray(centres, dtype="<f4").nbytes)
+    document = reporting.of_build(settings, items, result, device=device, single=single, manifest=manifest)
     try:
-        built = bundle.write(settings.output, chosen.outcome.candidate, items.labels, centres)
+        built = bundle.write(settings.output, chosen.outcome.candidate, items.labels, centres,
+                             reports=reporting.files(document))
     except bundle.BundleError as error:
         print(f"\nFAILED: {error}", file=sys.stderr)
         return exitcodes.ENVIRONMENT
@@ -311,12 +330,23 @@ def describe_built(built: bundle.Built) -> list[str]:
     lines += [
         f"  {bundle.PAGE} is an example page and every build writes it again: copy it before you change it",
         f"  hosting/ has the headers for Netlify, Vercel and nginx; {bundle.LICENSES} the licenses",
+        f"  {bundle.REPORT_MARKDOWN} says why each model was taken or not, {bundle.REPORT_JSON} says it "
+        "to scripts; neither holds the text of an example",
         "",
         "To look at it, serve the folder over http (a page opened from file:// cannot start the model):",
         f"  python -m http.server 8000 --directory {_quoted(where)}",
         "and open http://localhost:8000/ . That server sends no isolation headers, so the model runs in "
         "one thread there.",
     ]
+    return lines
+
+
+def describe_refusal(output: os.PathLike[str] | str) -> list[str]:
+    """Where the report of a build without a model is, and what it did not touch."""
+    where = _shown(output)
+    lines = [f"The report is in {where}: {bundle.REPORT_MARKDOWN} for you, {bundle.REPORT_JSON} for scripts."]
+    if os.path.isfile(os.path.join(output, bundle.MANIFEST)):
+        lines.append(f"  {where} also holds the folder of an earlier build: this run did not change it.")
     return lines
 
 
