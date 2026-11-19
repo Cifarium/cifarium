@@ -18,7 +18,8 @@ import numpy as np
 import pytest
 from publishable import example_leaks
 
-from cifarium import build, bundle, catalog, cli, exitcodes, hub, vendor
+import cifarium
+from cifarium import build, bundle, catalog, cli, exitcodes, hub, paths, results, vendor
 from cifarium.bench import BenchError
 from cifarium.build import LATENCY, Speed, choose
 from cifarium.config import Config, Label, Limits
@@ -680,3 +681,264 @@ def test_the_command_line_has_build_and_no_smoke(tmp_path, chrome, monkeypatch, 
     assert cli.main(["build", str(settings)]) == 0
     monkeypatch.chdir(tmp_path)
     assert cli.main(["build"]) == 0
+
+
+# --- the cache of results: the same answer, the vectors kept ----------------------------------
+
+
+def table_of(out: str) -> list[str]:
+    """The lines of the table of every candidate, as printed."""
+    lines = out.splitlines()
+    start = lines.index("Every candidate:") + 1
+    return lines[start:lines.index("", start)]
+
+
+def report_of(written: Written) -> dict:
+    return json.loads(written.reports["report.json"])
+
+
+def chosen_speed(written: Written) -> dict:
+    return next(row for row in report_of(written)["candidates"] if row["verdict"] == "passed")["speed"]
+
+
+def jobs_of(chrome: FakeChrome) -> list[tuple[int | None, int]]:
+    """What the bench was asked: the number of threads, if fixed, and the number of texts."""
+    return [(job.get("threads"), len(job["inputs"])) for job in chrome.jobs]
+
+
+def minilm() -> catalog.Candidate:
+    return next(c for c in catalog.candidates("classify") if c.entry.id == "all-minilm-l6-v2")
+
+
+def test_a_second_build_on_the_same_examples_computes_no_vector_and_answers_the_same(tmp_path, chrome, capsys):
+    path = write_task(tmp_path)
+    assert build.run(path) == 0
+    first, _ = capsys.readouterr()
+    assert build.run(path) == 0
+    second, err = capsys.readouterr()
+
+    assert "all-minilm-l6-v2: running 12 examples on the processor" in first
+    assert "Vectors of the examples: 12 computed on the bench." in first
+    assert "all-minilm-l6-v2: 12 vectors from the cache" in second
+    assert "Vectors of the examples: all 12 taken from the cache." in second
+    assert "running" not in second
+    assert f"The cache is {paths.results_dir()}; delete that folder to compute every vector again." in second
+    # What the bench was asked in the second build: the times of the chosen model, one thread.
+    assert jobs_of(chrome) == [(None, 12), (1, 6), (None, 12), (1, 6)]
+    # The same table, the same choice, the same centres, so the same folder.
+    assert table_of(first) == table_of(second)
+    assert "Chosen: all-minilm-l6-v2" in second
+    assert chrome.written[0].centres.tobytes() == chrome.written[1].centres.tobytes()
+    assert chrome.written[0].names == chrome.written[1].names
+
+
+def test_the_times_are_measured_in_the_build_that_prints_them_and_never_taken_from_the_cache(
+        tmp_path, chrome, capsys):
+    path = write_task(tmp_path)
+    assert build.run(path) == 0
+    capsys.readouterr()
+    chrome.ms = 25.0  # the machine got slower between the builds
+
+    assert build.run(path) == 0
+    out, _ = capsys.readouterr()
+
+    assert "all-minilm-l6-v2: measuring the speed on 12 examples" in out
+    assert "per example   25.0 ms median" in out and "10.0 ms" not in out
+    assert chosen_speed(chrome.written[0])["medianMs"] == 10.0
+    assert chosen_speed(chrome.written[1])["medianMs"] == 25.0
+
+
+def test_the_run_for_the_times_of_cached_vectors_is_short_on_a_long_set(tmp_path, chrome, capsys, monkeypatch):
+    monkeypatch.setattr(build, "SPEED_INPUTS", 5)
+    path = write_task(tmp_path)
+    assert build.run(path) == 0
+    capsys.readouterr()
+
+    assert build.run(path) == 0
+    out, _ = capsys.readouterr()
+
+    assert "measuring the speed on 5 examples" in out
+    # The first build, with nothing cached, measured on all of them: as it always did.
+    assert jobs_of(chrome) == [(None, 12), (1, 6), (None, 5), (1, 6)]
+
+
+def test_an_example_that_changes_is_the_only_vector_computed(tmp_path, chrome, capsys):
+    path = write_task(tmp_path)
+    assert build.run(path) == 0
+    capsys.readouterr()
+    examples_file = tmp_path / "examples.jsonl"
+    examples_file.write_text(examples_file.read_text(encoding="utf-8").replace("number 0", "number 100", 1),
+                             encoding="utf-8")
+
+    assert build.run(path) == 0
+    out, _ = capsys.readouterr()
+
+    assert "all-minilm-l6-v2: running 1 examples on the processor, 11 more from the cache" in out
+    assert "Vectors of the examples: 11 taken from the cache, 1 computed on the bench." in out
+    assert chrome.jobs[2]["inputs"] == ["a question about shipping, number 100"]
+    # One text is too few for a median: the times come from a run of their own.
+    assert "measuring the speed on 12 examples" in out
+    assert jobs_of(chrome)[2:] == [(None, 1), (None, 12), (1, 6)]
+
+
+def test_examples_that_are_added_are_the_only_vectors_computed(tmp_path, chrome, capsys):
+    assert build.run(write_task(tmp_path)) == 0
+    capsys.readouterr()
+    path = write_task(tmp_path, extra=(("one more question about returns", "returns"),
+                                       ("and another about shipping", "shipping")))
+
+    assert build.run(path) == 0
+    out, _ = capsys.readouterr()
+
+    assert chrome.jobs[2]["inputs"] == ["one more question about returns", "and another about shipping"]
+    assert "Vectors of the examples: 12 taken from the cache, 2 computed on the bench." in out
+
+
+def test_a_change_of_anything_the_vector_depends_on_computes_everything_again(tmp_path, chrome, capsys, monkeypatch):
+    path = write_task(tmp_path)
+    assert build.run(path) == 0
+    capsys.readouterr()
+
+    for patch in (lambda: monkeypatch.setattr(vendor, "TRANSFORMERS_VERSION", "9.9.9"),
+                  lambda: monkeypatch.setattr(cifarium, "__version__", "9.9.9"),
+                  lambda: monkeypatch.setattr(results, "page_digest", lambda: "another page")):
+        patch()
+        assert build.run(path) == 0
+        out, _ = capsys.readouterr()
+        assert "running 12 examples on the processor" in out and "from the cache" not in out
+        assert "Vectors of the examples: 12 computed on the bench." in out
+
+
+def test_a_cache_file_that_is_damaged_does_not_stop_the_build_and_is_replaced(
+        tmp_path, chrome, capsys, private_results):
+    path = write_task(tmp_path)
+    assert build.run(path) == 0
+    capsys.readouterr()
+    [kept] = list(private_results.glob("*.npz"))
+    kept.write_bytes(os.urandom(2048))
+
+    assert build.run(path) == 0
+    again, err = capsys.readouterr()
+    assert build.run(path) == 0
+    third, _ = capsys.readouterr()
+
+    assert "running 12 examples on the processor" in again and err == ""
+    assert "all 12 taken from the cache" in third
+
+
+def test_a_cache_that_cannot_be_written_does_not_fail_the_build(tmp_path, chrome, capsys, monkeypatch):
+    blocker = tmp_path / "results"
+    blocker.write_text("a file where the folder should be", encoding="utf-8")
+    monkeypatch.setattr(paths, "results_dir", lambda cache=None: blocker)
+
+    code = build.run(write_task(tmp_path))
+
+    out, err = capsys.readouterr()
+    assert code == 0, err
+    assert "all-minilm-l6-v2: the vectors could not be saved to the cache" in out
+    assert "the next build computes them again" in out
+    assert "Chosen: all-minilm-l6-v2" in out
+
+
+def test_a_build_removes_the_files_of_the_cache_nobody_used_for_long_and_says_so(
+        tmp_path, chrome, capsys, private_results):
+    private_results.mkdir()
+    old = private_results / "gone-0123456789abcdef0123.npz"
+    old.write_bytes(b"x")
+    long_ago = old.stat().st_mtime - (results.MAX_AGE_DAYS + 1) * 24 * 3600
+    os.utime(old, (long_ago, long_ago))
+
+    assert build.run(write_task(tmp_path)) == 0
+
+    out, _ = capsys.readouterr()
+    assert f"cache     removed 1 old file of earlier builds from {private_results}" in out
+    assert not old.exists() and len(list(private_results.glob("*.npz"))) == 1
+
+
+def test_a_failed_bench_is_not_kept(tmp_path, chrome, capsys, monkeypatch, private_results):
+    def fail(job, *, timeout):
+        raise BenchError("the tab crashed")
+
+    monkeypatch.setattr(chrome, "run", fail)
+
+    assert build.run(write_task(tmp_path)) == exitcodes.NO_MODEL
+
+    capsys.readouterr()
+    assert not private_results.exists() or list(private_results.iterdir()) == []
+
+
+def test_a_run_for_the_times_that_fails_is_a_refusal_of_that_candidate_and_the_walk_goes_on():
+    bench = FakeBench({"a": (good(), 1.0), "b": (good(), 1.0)})
+    asked: list[str] = []
+
+    def speed_of(candidate: catalog.Candidate) -> Speed:
+        asked.append(candidate.entry.id)
+        if candidate.entry.id == "a":
+            raise BenchError("the tab crashed\nwith a second line")
+        return bench.speed(candidate)
+
+    reported: list[build.Row] = []
+    result = choose(settings(), task(), [make("a", 10), make("b", 20)], bench, speed_of,
+                    engine_sizes=ENGINE_SIZES, report=reported.append)
+
+    assert verdicts(result.rows) == [("a", "bench"), ("b", "passed")]
+    assert result.chosen.outcome.candidate.entry.id == "b"
+    assert "the bench failed while measuring the speed: the tab crashed" in result.rows[0].message
+    assert result.rows[0].outcome.error == "the tab crashed\nwith a second line"
+    assert result.rows[0].outcome.evaluation is None and result.rows[0].speed is None
+    assert verdicts(reported) == [("a", "bench"), ("b", "passed")]
+    # Each candidate was measured once, though the report and the walk both ask for its row.
+    assert asked == ["a", "b"]
+
+
+def test_a_page_that_returns_other_vectors_than_it_was_asked_for_is_a_failed_bench_when_some_came_from_the_cache(
+        tmp_path, chrome, monkeypatch):
+    embed = build.ChromeEmbed(chrome, lambda message: None, results.Cache(tmp_path / "results"))
+    texts = ["a question about shipping", "a question about returns"]
+    embed(minilm(), texts)
+    real = chrome.run
+
+    def doubled(job, *, timeout):
+        answer = real(job, timeout=timeout)
+        rows = np.frombuffer(base64.b64decode(answer["vectors"]), dtype="<f4").reshape(answer["count"], -1)
+        return {**answer, "count": 2 * len(rows), "vectors": base64.b64encode(np.vstack([rows, rows]).tobytes())}
+
+    monkeypatch.setattr(chrome, "run", doubled)
+
+    with pytest.raises(BenchError, match="asked the page for 1 vectors, it returned 2"):
+        embed(minilm(), [*texts, "a question about technical things"])
+    # With nothing from the cache the answer goes on as the page gave it, and the selection judges it.
+    assert len(build.ChromeEmbed(chrome, lambda message: None)(minilm(), texts)) == 4
+
+
+def test_the_same_text_twice_is_computed_once_and_both_places_get_its_vector(tmp_path, chrome):
+    embed = build.ChromeEmbed(chrome, lambda message: None, results.Cache(tmp_path / "results"))
+
+    vectors = embed(minilm(), ["about shipping", "about returns", "about shipping"])
+
+    assert chrome.jobs[0]["inputs"] == ["about shipping", "about returns"]
+    assert vectors.shape[0] == 3 and np.array_equal(vectors[0], vectors[2])
+    assert (embed.reused, embed.computed) == (0, 2)
+
+
+def test_without_a_cache_the_bench_gets_every_text_and_nothing_is_written(tmp_path, chrome):
+    lines: list[str] = []
+    embed = build.ChromeEmbed(chrome, lines.append)
+    texts = ["about shipping", "about returns"]
+
+    embed(minilm(), texts)
+    embed(minilm(), texts)
+
+    assert [job["inputs"] for job in chrome.jobs] == [texts, texts]
+    assert lines.count("  all-minilm-l6-v2: running 2 examples on the processor") == 2
+    assert not (tmp_path / "results").exists()
+
+
+def test_what_the_build_says_about_the_cache():
+    assert build.describe_cache(0, 0, "x") == []
+    assert build.describe_cache(0, 5, "x")[1] == "Vectors of the examples: 5 computed on the bench."
+    assert build.describe_cache(5, 0, "x")[1] == "Vectors of the examples: all 5 taken from the cache."
+    assert build.describe_cache(4, 1, "x")[1] == (
+        "Vectors of the examples: 4 taken from the cache, 1 computed on the bench.")
+    assert build.describe_cache(4, 1, "some folder")[2] == (
+        "  The cache is some folder; delete that folder to compute every vector again.")

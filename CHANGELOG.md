@@ -80,3 +80,9 @@ The first contracts. Nothing was published before, so nothing is a break.
   which is negative for a model that fell short, and the misses by line of the examples file; the
   times) and, for the chosen model, the weight of the first load by parts and its one-thread run.
   The keys of `report.md` are not a contract. Neither file holds the text of an example.
+- `build` keeps the vectors of the examples between runs, in the `results` folder of the cifarium
+  cache (`%LOCALAPPDATA%\cifarium` on Windows), so a second build on the same examples computes none
+  of them and answers the same: the same choice, the same table, the same bytes of the folder, the
+  `report.json` times aside. The times are not kept: the model it chooses is measured again in
+  every build. To start from nothing, delete that folder; `build` prints its path. The folder and
+  its files are not a contract, and `build` has no flag for it.

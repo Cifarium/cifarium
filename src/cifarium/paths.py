@@ -30,6 +30,11 @@ def models_dir(cache: Path | None = None) -> Path:
     return (cache or cache_dir()) / "models"
 
 
+def results_dir(cache: Path | None = None) -> Path:
+    """Vectors the bench computed, kept between builds (:mod:`results`). Safe to delete."""
+    return (cache or cache_dir()) / "results"
+
+
 def profile_dir(cache: Path | None = None) -> Path:
     """Chrome profile used only by cifarium."""
     return (cache or cache_dir()) / "chrome-profile"

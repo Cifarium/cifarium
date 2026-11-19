@@ -8,6 +8,10 @@ is too slow does not end the build: the walk goes on with the candidates behind 
 chosen model is run once more in a single thread, on a few examples, to show what a site
 without the isolation headers gets. ARCHITECTURE.md, section 9 (``build``), has the choices.
 
+The vectors of the examples are kept between builds (:mod:`results`): a second build computes only
+what is new, and gives the same answer. The times are never kept: the chosen model is measured
+in every build.
+
 The result is printed and the folder for the site is written to ``output`` by :mod:`bundle`.
 Whether a model was chosen or not, ``report.md`` and ``report.json`` (:mod:`report`) go to
 ``output`` too: the table of reasons is what a developer and a script have left of a refusal.
@@ -21,12 +25,12 @@ import re
 import statistics
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
 
-from . import bundle, catalog, config, evaluate, examples, exitcodes, hub, selection, vendor
+from . import bundle, catalog, config, evaluate, examples, exitcodes, hub, paths, results, selection, vendor
 from . import report as reporting
 from .bench import Bench, BenchError, decode_vectors, embed_job, open_bench
 from .selection import BYTES_PER_MB, Outcome, Verdict
@@ -37,6 +41,11 @@ TIME_LIMIT_S = 300.0
 SINGLE_THREAD_INPUTS = 6
 """Examples of the single-thread run: the first call warms up, the median is of the other five.
 Few on purpose: no vectors are needed, and a large model in one thread takes seconds a call."""
+
+SPEED_INPUTS = 20
+"""Examples of the run that measures the speed of a candidate whose vectors came from the cache:
+the first call warms up, the median is of the others. The same number is what a build on a small
+set measures anyway; on a set of a thousand it keeps the run from costing what the first one did."""
 
 LATENCY = "latency"
 """Verdict word of a candidate that passed on accuracy and was too slow. It lives here and not
@@ -149,11 +158,23 @@ def choose(
     """
     sizes = vendor.ENGINE_BYTES if engine_sizes is None else engine_sizes
     limit = settings.limits.max_latency_ms
+    measured: dict[tuple[str, str], Row] = {}
 
     def row_of(outcome: Outcome) -> Row:
-        if outcome.verdict is Verdict.PASSED:
-            return Row(outcome, speed_of(outcome.candidate), limit)
-        return Row(outcome)
+        if outcome.verdict is not Verdict.PASSED:
+            return Row(outcome)
+        # Asked twice, by the report of the walk and by the walk: the bench measures once.
+        key = _key(outcome.candidate)
+        if key not in measured:
+            try:
+                measured[key] = Row(outcome, speed_of(outcome.candidate), limit)
+            except BenchError as error:
+                # Vectors from the cache can pass a candidate that never ran in this build, and the
+                # run for its times can then fail: the same refusal as when its vectors fail.
+                failed = replace(outcome, verdict=Verdict.BENCH, evaluation=None, error=str(error),
+                                 message=f"the bench failed while measuring the speed: {_first_line(error)}")
+                measured[key] = Row(failed)
+        return measured[key]
 
     def on_outcome(outcome: Outcome) -> None:
         if report is not None and outcome.tried:
@@ -181,25 +202,79 @@ def choose(
 class ChromeEmbed:
     """The selection's bench function on a running bench.
 
-    Downloads the files of a candidate when they are not in the cache yet, runs the job of its
-    recipe in a new tab and keeps the times, which :meth:`speed` gives back.
+    Takes the vectors the cache has (:mod:`results`), downloads the files of a candidate that has
+    texts left, runs the job of its recipe in a new tab for those texts alone and saves what it got.
+    The times are never taken from the cache: :meth:`speed` gives the ones of a run of this build,
+    and runs one itself when the vectors came from the cache. ``cache=None`` is a bench without
+    a cache.
     """
 
-    def __init__(self, bench: Bench, say: Callable[[str], None]) -> None:
+    def __init__(self, bench: Bench, say: Callable[[str], None], cache: results.Cache | None = None) -> None:
         self.bench = bench
         self.say = say
+        self.cache = cache
+        self.reused = 0
+        """Vectors taken from the cache, over all the candidates."""
+        self.computed = 0
+        """Vectors computed on the bench."""
         self._speeds: dict[tuple[str, str], Speed] = {}
+        self._texts: dict[tuple[str, str], list[str]] = {}
 
     def __call__(self, candidate: catalog.Candidate, texts: Sequence[str]) -> np.ndarray:
         entry = candidate.entry
+        key = _key(candidate)
+        self._speeds.pop(key, None)
+        self._texts[key] = list(texts)
+        hashes = [results.text_hash(text) for text in texts]
+        wanted = dict(zip(hashes, texts))  # one entry per text, in the order of the examples
+        known = self.cache.load(candidate) if self.cache is not None else {}
+        missing = {digest: text for digest, text in wanted.items() if digest not in known}
+        kept = len(wanted) - len(missing)
+        self.reused += kept
+        if not missing:
+            self.say(f"  {entry.id}: {kept} vectors from the cache")
+            return np.stack([known[digest] for digest in hashes])
+
         download(entry, self.say)
-        self.say(f"  {entry.id}: running {len(texts)} examples on the processor")
-        result = self.bench.run(embed_job(entry, candidate.recipe, texts), timeout=TIME_LIMIT_S)
-        self._speeds[_key(candidate)] = Speed.of(result)
-        return decode_vectors(result)
+        from_cache = f", {kept} more from the cache" if kept else ""
+        self.say(f"  {entry.id}: running {len(missing)} examples on the processor{from_cache}")
+        result = self.bench.run(embed_job(entry, candidate.recipe, list(missing.values())), timeout=TIME_LIMIT_S)
+        fresh = decode_vectors(result)
+        if len(fresh) != len(missing):
+            if not kept:
+                return fresh  # as the page gave it: the selection says what is wrong with it
+            raise BenchError(f"asked the page for {len(missing)} vectors, it returned {len(fresh)}")
+        self.computed += len(missing)
+        # The times of this run stand for the candidate when the run was long enough to say.
+        if len(missing) >= min(len(wanted), SPEED_INPUTS):
+            self._speeds[key] = Speed.of(result)
+        vectors = {**{digest: known[digest] for digest in wanted if digest in known},
+                   **dict(zip(missing, fresh))}
+        if self.cache is not None:
+            self._save(candidate, {digest: vectors[digest] for digest in wanted})
+        return np.stack([vectors[digest] for digest in hashes])
 
     def speed(self, candidate: catalog.Candidate) -> Speed:
-        return self._speeds[_key(candidate)]
+        """The times of the candidate in this build. When its vectors came from the cache, or most
+        of them, this is a run of the first :data:`SPEED_INPUTS` examples made now."""
+        key = _key(candidate)
+        if key not in self._speeds:
+            entry = candidate.entry
+            texts = list(dict.fromkeys(self._texts[key]))[:SPEED_INPUTS]
+            download(entry, self.say)
+            self.say(f"  {entry.id}: measuring the speed on {len(texts)} examples")
+            result = self.bench.run(embed_job(entry, candidate.recipe, texts), timeout=TIME_LIMIT_S)
+            self._speeds[key] = Speed.of(result)
+        return self._speeds[key]
+
+    def _save(self, candidate: catalog.Candidate, vectors: dict[bytes, np.ndarray]) -> None:
+        assert self.cache is not None
+        try:
+            self.cache.store(candidate, vectors)
+        except OSError as error:
+            # The build is right without it; the next one computes the vectors again.
+            self.say(f"  {candidate.entry.id}: the vectors could not be saved to the cache "
+                     f"({_first_line(error)}); the next build computes them again")
 
     def single_thread(self, candidate: catalog.Candidate, texts: Sequence[str]) -> Speed:
         """Times of the candidate in one thread, on the first :data:`SINGLE_THREAD_INPUTS` texts."""
@@ -254,6 +329,10 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
     _say(f"  limits    first load up to {settings.limits.max_size_mb:g} MB, usual answer "
          + ("without a limit" if limit is None else f"up to {limit:g} ms")
          + f", license {settings.license}")
+    cache = results.Cache(paths.results_dir())
+    pruned = cache.prune()
+    if pruned:
+        _say(f"  cache     removed {pruned} old file{'s' if pruned != 1 else ''} of earlier builds from {cache.folder}")
     try:
         vendor.ensure_engine(report=lambda message: _say(f"  {message}"))
         _say(f"  engine    Transformers.js {vendor.TRANSFORMERS_VERSION}, "
@@ -262,7 +341,7 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
             _say(f"  browser   {describe_browser(bench)}")
             device = reporting.device_of(bench.device, bench.headless)
             _say("\nCandidates on the bench, the lightest first:")
-            embed = ChromeEmbed(bench, _say)
+            embed = ChromeEmbed(bench, _say, cache)
             result = choose(settings, items, candidates, embed, embed.speed, report=_report)
             chosen = result.chosen
             single: Speed | str | None = None
@@ -277,6 +356,8 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
         print(f"\nFAILED: {error}", file=sys.stderr)
         return exitcodes.ENVIRONMENT
 
+    for line in describe_cache(embed.reused, embed.computed, cache.folder):
+        _say(line)
     _say("\nEvery candidate:")
     for line in describe_table(result.rows):
         _say(f"  {line}")
@@ -348,6 +429,21 @@ def describe_refusal(output: os.PathLike[str] | str) -> list[str]:
     if os.path.isfile(os.path.join(output, bundle.MANIFEST)):
         lines.append(f"  {where} also holds the folder of an earlier build: this run did not change it.")
     return lines
+
+
+def describe_cache(reused: int, computed: int, folder: os.PathLike[str] | str) -> list[str]:
+    """Which vectors of the examples came from the cache and which the bench computed, and how to
+    start from nothing. Empty when no candidate got as far as vectors."""
+    if reused == computed == 0:
+        return []
+    if reused == 0:
+        what = f"{computed} computed on the bench"
+    elif computed == 0:
+        what = f"all {reused} taken from the cache"
+    else:
+        what = f"{reused} taken from the cache, {computed} computed on the bench"
+    return ["", f"Vectors of the examples: {what}.",
+            f"  The cache is {folder}; delete that folder to compute every vector again."]
 
 
 def describe_table(rows: Sequence[Row]) -> list[str]:
