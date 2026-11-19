@@ -55,8 +55,12 @@ TRANSFORMERS_LICENSE_FILE = "LICENSE-transformers-js.txt"
 ORT_LICENSE_FILE = "LICENSE-onnxruntime-web.txt"
 # The commit onnxruntime-web 1.31.0-dev.20260914-8d85527a0 was built from: its tarball names it in
 # package/__commit.txt. The tarball carries no LICENSE (package.json says "MIT", the README sends
-# the reader to GitHub), so the text is taken from the repository at this very commit.
+# the reader to GitHub), so the text is the repository's at this very commit. It lies in the package
+# (``licenses/``) and not at an address: the repository answered 404 on 19.11.2026, and a text that
+# has to be fetched is a second source of download that a new user's first build depends on.
 ORT_WEB_COMMIT = "8d85527a010e294a26b274749f74294b2a32cec5"
+PACKAGED_LICENSES = Path(__file__).resolve().parent / "licenses"
+"""Folder of the license texts that come with cifarium itself."""
 
 
 class VendorError(RuntimeError):
@@ -71,11 +75,11 @@ class PackageLicense:
     """File name in the engine folder."""
     sha256: str
     """Hex digest of the text as it is stored. The tarball is already pinned by its sha512; this
-    one also covers a text fetched from elsewhere and shows in a diff when a version moves."""
+    one also covers a text that came with cifarium and shows in a diff when a version moves."""
     member: str | None = "package/LICENSE"
     """Path of the text inside the tarball, or None when the tarball has none."""
-    url: str | None = None
-    """Where to fetch the text when the tarball has none."""
+    packaged: str | None = None
+    """Name of the text in :data:`PACKAGED_LICENSES`, for a tarball that has none."""
 
 
 @dataclass(frozen=True)
@@ -126,7 +130,7 @@ ENGINE_PACKAGES: tuple[NpmPackage, ...] = (
             ORT_LICENSE_FILE,
             "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",  # MIT
             member=None,
-            url=f"https://raw.githubusercontent.com/microsoft/onnxruntime/{ORT_WEB_COMMIT}/LICENSE",
+            packaged=ORT_LICENSE_FILE,
         ),
     ),
 )
@@ -188,7 +192,7 @@ def fetch_package(
     into ``dest``.
 
     The archive is parsed only after its digest matched the pinned value; the license text is
-    checked against its own pinned sha256.
+    checked against its own pinned sha256. The tarball is the only thing fetched.
     """
     algorithm, _, expected = package.integrity.partition("-")
     if algorithm != "sha512" or not expected:
@@ -215,7 +219,7 @@ def fetch_package(
         _copy_dist_files(tarball, package, dest)
         if package.license is not None:
             tarball.seek(0)
-            _store_license(tarball, package, package.license, dest, open_url)
+            _store_license(tarball, package, package.license, dest)
 
 
 def _store_license(
@@ -223,7 +227,6 @@ def _store_license(
     package: NpmPackage,
     license: PackageLicense,
     dest: Path,
-    open_url: Callable[[str], BinaryIO],
 ) -> None:
     """Write the license text of ``package`` into ``dest`` after checking its sha256."""
     text: bytes | None = None
@@ -239,12 +242,14 @@ def _store_license(
             raise VendorError(f"Could not read the {package.name} tarball: {error}") from error
         if text is None:
             raise VendorError(f"{package.name} {package.version} has no {license.member}")
-    elif license.url is not None:
+    elif license.packaged is not None:
         try:
-            with open_url(license.url) as response:
-                text = response.read()
+            text = (PACKAGED_LICENSES / license.packaged).read_bytes()
         except OSError as error:
-            raise VendorError(f"Could not download {license.url}: {error}") from error
+            raise VendorError(
+                f"The text of the license of {package.name}, {license.packaged}, cannot be read from "
+                f"{PACKAGED_LICENSES}: {error}. Install cifarium again."
+            ) from error
     if text is None:
         raise VendorError(f"{package.name} {package.version}: no source for its license text")
     actual = hashlib.sha256(text).hexdigest()
