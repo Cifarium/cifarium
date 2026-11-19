@@ -1,27 +1,44 @@
 """The three hosting files of a build folder, read the way their servers read them.
 
 ``netlify``, ``vercel`` and ``nginx`` give the headers a server with that file sends for a path
-(``/vendor/x.js``); the first two follow the documented rules for the patterns the files use,
-the third picks a ``location`` the way nginx does (exact, then regular expression or the
-longest prefix). :class:`RuleServer` serves a folder with such a function, so a test can see
-what a browser does with the headers of the file and nothing else.
+(``/vendor/x.js``). The first two follow the documented rules for the patterns the files use, the
+third picks a ``location`` the way nginx does (exact, then regular expression or the longest
+prefix). :func:`headers_of` reads the file of a folder and returns such a function; ``check`` hands
+it to :class:`server.SiteServer`, so the page of the check gets the headers of the file and nothing
+else, and a test can see what a browser does with them (ARCHITECTURE.md, sections 1.6 and 9).
+
+The readers know the patterns of the files cifarium writes (``bundle.HOSTING_FILES``), not every
+feature of the three servers: a file the developer rewrote with other rules may be read wrongly,
+and the hosts themselves were never run (section 7).
 """
 
 from __future__ import annotations
 
 import json
 import re
-import threading
 from collections.abc import Callable
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
-
-from cifarium.server import mime_type
 
 HeadersOf = Callable[[str], dict[str, str]]
+"""The headers a host sends for a path such as ``/vendor/x.js``."""
 
 ISOLATION = {"Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp"}
+"""The two headers that make a page ``crossOriginIsolated`` (section 1.6)."""
+
+FOLDER = "hosting"
+"""Folder of the build folder that holds the three files."""
+
+FILES = {"netlify": "_headers", "vercel": "vercel.json", "nginx": "nginx.conf"}
+"""Which hosting file belongs to which name. ``_headers`` is read by Netlify and Cloudflare Pages."""
+
+DEFAULT = "netlify"
+
+PROBES = ("/", "/index.html", "/cifarium-worker.js", "/vendor/x.js", "/models/x", "/cifarium.json")
+"""Paths a file is read at once, to learn that it cannot be read before a page depends on it."""
+
+
+class HostingError(ValueError):
+    """A hosting file is missing or cannot be read as its server reads it."""
 
 
 def netlify(text: str, path: str) -> dict[str, str]:
@@ -77,49 +94,29 @@ def nginx(text: str, path: str) -> dict[str, str]:
     return chosen[2] if chosen else {}
 
 
-class RuleServer:
-    """Serves a folder with the headers ``headers_of(path)`` names for each file, and no others."""
+READERS: dict[str, Callable[[str, str], dict[str, str]]] = {"netlify": netlify, "vercel": vercel, "nginx": nginx}
 
-    def __init__(self, folder: Path, headers_of: HeadersOf) -> None:
-        root = Path(folder).resolve()
 
-        class Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
+def headers_of(folder: str | Path, hosting: str = DEFAULT) -> HeadersOf:
+    """The headers a host would send for a path, by the file ``hosting`` of ``<folder>/hosting/``.
 
-            def do_GET(self) -> None:
-                path = unquote(urlsplit(self.path).path)
-                target = (root / (path.lstrip("/") or "index.html")).resolve()
-                if not target.is_relative_to(root) or not target.is_file():
-                    self.send_response(404)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
-                data = target.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", mime_type(target.name))
-                self.send_header("Content-Length", str(len(data)))
-                for name, value in headers_of(path).items():
-                    self.send_header(name, value)
-                self.end_headers()
-                self.wfile.write(data)
-
-            def log_message(self, format: str, *args: object) -> None:
-                pass
-
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self._httpd.daemon_threads = True
-        self._thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.05},
-                                        daemon=True)
-
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self._httpd.server_address[1]}"
-
-    def __enter__(self) -> RuleServer:
-        self._thread.start()
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self._httpd.shutdown()
-        self._thread.join()
-        self._httpd.server_close()
+    ``hosting`` is a key of :data:`FILES`. Raises :class:`HostingError` when it is not, when the
+    file is not in the folder, is not text, or cannot be read by its reader.
+    """
+    if hosting not in FILES:
+        raise HostingError(f"unknown hosting {hosting!r}; the files are {', '.join(sorted(FILES))}")
+    name = FILES[hosting]
+    file = Path(folder) / FOLDER / name
+    try:
+        text = file.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise HostingError(f"{FOLDER}/{name} is not in {folder}: nothing says what headers the host sends") from None
+    except (OSError, UnicodeDecodeError) as error:
+        raise HostingError(f"{FOLDER}/{name} cannot be read: {error}") from error
+    reader = READERS[hosting]
+    try:
+        for probe in PROBES:
+            reader(text, probe)
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError, re.error) as error:
+        raise HostingError(f"{FOLDER}/{name} cannot be read the way {hosting} reads it: {error!r}") from error
+    return lambda path: reader(text, path)

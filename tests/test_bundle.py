@@ -10,13 +10,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import hosting_rules
 import numpy as np
 import pytest
 from publishable import example_leaks
 
 import cifarium
-from cifarium import bundle, catalog, paths, vendor
+from cifarium import bundle, catalog, hosting, paths, vendor
 from cifarium.config import Label
 
 ENGINE_SIZES = {vendor.LIBRARY_FILE: 11, vendor.WASM_LOADER_FILE: 7, vendor.WASM_BINARY_FILE: 13}
@@ -617,7 +616,7 @@ def test_a_build_folder_holds_no_text_of_examples_and_every_file_may_be_publishe
 
 # --- the hosting files ----------------------------------------------------------------------------
 
-READERS = {"_headers": hosting_rules.netlify, "vercel.json": hosting_rules.vercel, "nginx.conf": hosting_rules.nginx}
+READERS = {"_headers": hosting.netlify, "vercel.json": hosting.vercel, "nginx.conf": hosting.nginx}
 LONG = "public, max-age=31536000, immutable"
 
 
@@ -632,8 +631,8 @@ def test_every_hosting_file_isolates_the_page_the_worker_and_the_engine_and_noth
 
     for path in ["/", *("/" + file for file in sorted(tree(out)))]:
         headers = READERS[name](text, path)
-        has = {key: value for key, value in headers.items() if key in hosting_rules.ISOLATION}
-        assert has == (hosting_rules.ISOLATION if isolated(path) else {}), f"{name}: {path}"
+        has = {key: value for key, value in headers.items() if key in hosting.ISOLATION}
+        assert has == (hosting.ISOLATION if isolated(path) else {}), f"{name}: {path}"
 
 
 @pytest.mark.parametrize("name", sorted(READERS))

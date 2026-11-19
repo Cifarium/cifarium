@@ -3,7 +3,7 @@ label of a text, behind each hosting file's headers and behind a server with non
 
 The folder is the one `cifarium build` wrote for the English set (tests/conftest.py). The
 servers apply the headers of `hosting/_headers`, `vercel.json` or `nginx.conf` as those hosts
-would, and nothing else (tests/hosting_rules.py); the last one is `python -m http.server`, the
+would, and nothing else (`cifarium.hosting`, `server.SiteServer`); the last one is `python -m http.server`, the
 command the build prints for looking at the folder. Runs only with `pytest -m e2e`; it downloads
 the same files as tests/test_build_e2e.py.
 """
@@ -23,12 +23,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-import hosting_rules
 import pytest
 from test_build_e2e import ENGLISH
 
-from cifarium import bundle
+from cifarium import bundle, hosting
 from cifarium.bench import Bench, open_bench
+from cifarium.server import SiteServer
 
 pytestmark = pytest.mark.e2e
 
@@ -109,14 +109,10 @@ def check_page(shown: dict[str, Any], folder: Path) -> None:
     assert abs(weight - bundle.first_load(manifest, "cpu")[0] / 1e6) < 0.06
 
 
-@pytest.mark.parametrize("name, reader", [("_headers", hosting_rules.netlify),
-                                          ("vercel.json", hosting_rules.vercel),
-                                          ("nginx.conf", hosting_rules.nginx)])
+@pytest.mark.parametrize("name", sorted(hosting.FILES))
 def test_with_the_headers_of_a_hosting_file_alone_the_page_is_isolated_and_uses_threads(
-        bench, folder, name, reader):
-    text = (folder / "hosting" / name).read_text(encoding="utf-8")
-
-    with hosting_rules.RuleServer(folder, lambda path: reader(text, path)) as server:
+        bench, folder, name):
+    with SiteServer(folder, hosting.headers_of(folder, name)) as server:
         shown = use_page(bench, server.url + "/")
 
     check_page(shown, folder)
@@ -126,7 +122,7 @@ def test_with_the_headers_of_a_hosting_file_alone_the_page_is_isolated_and_uses_
 
 
 def test_without_headers_the_page_still_works_in_one_thread_and_says_why(bench, folder):
-    with hosting_rules.RuleServer(folder, lambda path: {}) as server:
+    with SiteServer(folder, lambda path: {}) as server:
         shown = use_page(bench, server.url + "/")
 
     check_page(shown, folder)
@@ -148,10 +144,9 @@ def test_the_page_and_its_thread_ask_only_for_files_of_the_folder(bench, folder)
         if not urlsplit(request.url).hostname.endswith(".kaspersky-labs.com"):
             seen.append((request.method, request.url))
 
-    text = (folder / "hosting" / "_headers").read_text(encoding="utf-8")
     bench.context.on("request", note)
     try:
-        with hosting_rules.RuleServer(folder, lambda path: hosting_rules.netlify(text, path)) as server:
+        with SiteServer(folder, hosting.headers_of(folder, "netlify")) as server:
             use_page(bench, server.url + "/")
             origin = server.url
     finally:
