@@ -48,10 +48,21 @@ The first contracts. Nothing was published before, so nothing is a break.
   (`documents`, `similarity`, `limits.min_tokens_per_sec`) answer "reserved in this version" whatever
   their value. The defaults are part of the contract: `pass_rate` 0.85, `limits.max_size_mb` 300,
   no `limits.max_latency_ms`, `license` permissive, `host` bundle, `output` `./cifarium-out`.
-- Exit codes of `build` and `init`: 0 done, 1 no model fits, 2 the settings, the examples or the
-  command line are wrong (`init`: a file is already there), 3 the environment failed (Chrome, the
-  network, the cache, the disk, the installation; `init`: the folder cannot be written; also an
-  error cifarium did not expect, with its traceback). `catalog-update` keeps its own codes.
+- Exit codes of `build`, `check` and `init`: 0 done, 1 no model fits (`check`: the folder did not
+  pass), 2 the settings, the examples or the command line are wrong (`init`: a file is already
+  there; `check`: no folder, manifest or report, a format newer than this cifarium reads, examples
+  that do not fit the labels of the folder), 3 the environment failed (Chrome, the network, the
+  cache, the disk, the installation; `init`: the folder cannot be written; also an error cifarium
+  did not expect, with its traceback). `catalog-update` keeps its own codes.
+- `cifarium check [folder] [--examples FILE] [--hosting netlify|vercel|nginx] [--headed]`: serves the
+  folder with the headers of one of its hosting files, loads the model on a page through
+  `cifarium.js` as a site would and answers the examples; it fails (code 1) when the share is under
+  `settings.passRate` of `report.json`, when the page or the worker is not isolated or has fewer
+  threads than ONNX Runtime takes for the cores, when the usual answer is over twice
+  `settings.limits.maxLatencyMs` (over once is a warning), or when `info().bytes` differs from
+  `chosen.firstLoad.bytes`. It reads `cifarium.json` and `report.json` and writes nothing, the
+  folder included. Without a folder and `--examples` it takes `output` and `examples` from
+  `cifarium.yaml` in the current folder. The lines it prints are not a contract.
 - One weight of a first visit: the engine, the data of the recipe and the files of the processor's
   variant (`bundle.first_load`). The model selection, `limits.max_size_mb`, the line "a first visit
   downloads" of `build` and `info().bytes` of the runtime all give this number; the selection used to

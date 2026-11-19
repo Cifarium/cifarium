@@ -8,7 +8,7 @@ import traceback
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from . import __version__, exitcodes
+from . import __version__, exitcodes, hosting
 from .config import DEFAULT_FILE
 from .examples import DEFAULT_FILE as EXAMPLES_FILE
 
@@ -18,6 +18,11 @@ STARTER_FILES = (DEFAULT_FILE, EXAMPLES_FILE)
 EXIT_CODES_HELP = (
     "Exit codes: 0 done, 1 no model fits, 2 the settings, the examples or the command line are "
     "wrong, 3 the environment failed (Chrome, the network, the disk)."
+)
+CHECK_EXIT_CODES_HELP = (
+    "Exit codes: 0 the folder passed, 1 it did not pass (the lines before the message say which "
+    "check failed), 2 the folder, its report, the examples or the command line are wrong, 3 the "
+    "environment failed (Chrome, the disk)."
 )
 
 
@@ -76,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cifarium",
         description="Find the smallest model that handles your examples right in the browser.",
-        epilog=EXIT_CODES_HELP,
+        epilog=EXIT_CODES_HELP + " For check: " + CHECK_EXIT_CODES_HELP.removeprefix("Exit codes: "),
     )
     parser.add_argument("--version", action="version", version=f"cifarium {__version__}")
     commands = parser.add_subparsers(dest="command", metavar="<command>")
@@ -106,6 +111,44 @@ def build_parser() -> argparse.ArgumentParser:
         "settings", nargs="?", default=DEFAULT_FILE, help=f"the settings file (default: {DEFAULT_FILE})"
     )
     build.add_argument(
+        "--headed", action="store_true", help="open a Chrome window instead of running without one"
+    )
+
+    check = commands.add_parser(
+        "check",
+        help="check that a build folder works the way a site will see it",
+        description=(
+            "Serve the folder with the headers of one of its hosting files, open a page where a "
+            "site's page would be in the installed Chrome, load the model through cifarium.js and "
+            "answer the examples. Judges the share of right answers against the pass rate, the "
+            "isolation and the threads, the usual answer against the speed limit and the weight "
+            "of the first load, the last three against what report.json of the folder says the "
+            "build promised. Writes nothing, the folder included. " + CHECK_EXIT_CODES_HELP
+        ),
+    )
+    check.add_argument(
+        "folder",
+        nargs="?",
+        default=None,
+        help=f"the build folder (default: `output` of {DEFAULT_FILE} in the current folder)",
+    )
+    check.add_argument(
+        "--examples",
+        metavar="FILE",
+        default=None,
+        help=f"the examples to answer, in the format of {EXAMPLES_FILE} with the labels of the folder "
+        f"(default: the ones {DEFAULT_FILE} names, which the build has seen; take others, "
+        "such as a file of examples held back, to see how the model does on new texts)",
+    )
+    check.add_argument(
+        "--hosting",
+        choices=sorted(hosting.FILES),
+        default=hosting.DEFAULT,
+        help="whose hosting file of the folder gives the headers: netlify reads hosting/_headers (so "
+        f"does Cloudflare Pages), vercel hosting/vercel.json, nginx hosting/nginx.conf (default: "
+        f"{hosting.DEFAULT})",
+    )
+    check.add_argument(
         "--headed", action="store_true", help="open a Chrome window instead of running without one"
     )
 
@@ -145,6 +188,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return build.run(args.settings, headed=args.headed)
 
         return _guarded(build_command)
+    if args.command == "check":
+
+        def check_command() -> int:
+            from . import check
+
+            return check.run(args.folder, examples=args.examples, hosting_name=args.hosting, headed=args.headed)
+
+        return _guarded(check_command)
     if args.command == "catalog-update":
         from . import catalog_update
 

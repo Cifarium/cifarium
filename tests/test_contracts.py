@@ -362,14 +362,34 @@ def test_the_starter_settings_hold_the_defaults_they_show():
 
 def test_the_exit_codes_are_the_contract():
     assert exitcodes.CODES == {"DONE": 0, "NO_MODEL": 1, "BAD_INPUT": 2, "ENVIRONMENT": 3}
+    # `check` has the same four numbers: its "the folder did not pass" is the 1 of "no model fits".
+    assert exitcodes.NOT_PASSED == exitcodes.NO_MODEL == 1
 
 
 def test_the_help_of_the_commands_names_the_exit_codes(capsys):
-    for argv in (["--help"], ["build", "--help"], ["init", "--help"]):
+    for argv in (["--help"], ["build", "--help"], ["check", "--help"], ["init", "--help"]):
         with pytest.raises(SystemExit):
             cli.main(argv)
         text = " ".join(capsys.readouterr().out.split())
         assert "0 " in text and "2 " in text and "3 " in text, argv
+
+
+def test_the_help_of_check_gives_the_meaning_of_each_code_in_the_words_of_check(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["check", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+
+    assert ("Exit codes: 0 the folder passed, 1 it did not pass (the lines before the message say which "
+            "check failed), 2 the folder, its report, the examples or the command line are wrong, 3 the "
+            "environment failed (Chrome, the disk).") in text
+
+
+def test_the_commands_are_these():
+    # A command is a contract after 0.1.0 (ARCHITECTURE.md, section 14): a new one is a decision.
+    parser = cli.build_parser()
+    commands = next(action for action in parser._actions if getattr(action, "choices", None))
+
+    assert sorted(commands.choices) == ["build", "catalog-update", "check", "init"]
 
 
 def test_the_license_file_has_these_parts_in_this_order(sources, tmp_path):

@@ -1,0 +1,92 @@
+<!doctype html>
+<!--
+  The page of `cifarium check` (ARCHITECTURE.md, section 9). The command serves it at `/` and
+  `/index.html` of the build folder in place of the folder's own page, so it sits where a site's
+  page sits and gets the headers the hosting file names for `/`. It is not part of the folder and
+  never written into it.
+
+  It does what a site's code does and nothing more: import cifarium.js, createCifarium, load, run
+  for each text, info. It reads the folder's files only and sends nothing anywhere.
+  Python starts it with window.cifariumCheck.start({ texts }) and reads window.cifariumCheck.outcome.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cifarium check</title>
+</head>
+<body data-state="created">
+  <p>cifarium check: this page stands where the page of your site would, loads the model of this
+    folder and answers the examples the command gave it.</p>
+  <p id="status">waiting</p>
+  <script type="module">
+    /**
+     * @typedef {{ texts: string[] }} CheckJob
+     * @typedef {{ label: string, score: number, ms: number }} Answer
+     * @typedef {{ info: object, loadMs: number, answers: Answer[], isolated: boolean, cores: number }} CheckResult
+     * @typedef {{ stage: 'import' | 'create' | 'load' | 'run', code: string | null, message: string,
+     *             index: number | null }} CheckFailure
+     */
+
+    const status = document.getElementById('status');
+
+    function show(state, text) {
+      document.body.dataset.state = state;
+      status.textContent = text;
+    }
+
+    /**
+     * @param {CheckJob} job
+     * @returns {Promise<CheckResult>}
+     */
+    async function check(job) {
+      const began = performance.now();
+      /** @type {CheckFailure['stage']} */
+      let stage = 'import';
+      let index = null;
+      try {
+        // A dynamic import: when cifarium.js is missing or served with a wrong type, this page
+        // still answers, and says so instead of leaving the command waiting.
+        const { createCifarium } = await import('./cifarium.js');
+        stage = 'create';
+        const model = await createCifarium('./cifarium.json');
+        stage = 'load';
+        show('loading', 'loading the model');
+        const info = await model.load();
+        const loadMs = performance.now() - began;
+        stage = 'run';
+        /** @type {Answer[]} */
+        const answers = [];
+        for (index = 0; index < job.texts.length; index += 1) {
+          const started = performance.now();
+          const result = await model.run(job.texts[index]);
+          answers.push({ label: result.label, score: result.score, ms: performance.now() - started });
+        }
+        index = null;
+        return {
+          info,
+          loadMs,
+          answers,
+          isolated: self.crossOriginIsolated === true,
+          cores: navigator.hardwareConcurrency || 1,
+        };
+      } catch (error) {
+        throw { stage, index, code: (error && error.code) || null, message: String((error && error.message) || error) };
+      }
+    }
+
+    window.cifariumCheck = {
+      /** @type {{ result: CheckResult } | { failure: CheckFailure } | undefined} */
+      outcome: undefined,
+      /** Returns at once; the command waits for `outcome`. @param {CheckJob} job */
+      start(job) {
+        show('running', `answering ${job.texts.length} examples`);
+        check(job).then(
+          (result) => { show('done', 'done'); this.outcome = { result }; },
+          (failure) => { show('failed', failure.message); this.outcome = { failure }; },
+        );
+      },
+    };
+  </script>
+</body>
+</html>
