@@ -86,3 +86,10 @@ The first contracts. Nothing was published before, so nothing is a break.
   `report.json` times aside. The times are not kept: the model it chooses is measured again in
   every build. To start from nothing, delete that folder; `build` prints its path. The folder and
   its files are not a contract, and `build` has no flag for it.
+- The recipe `zero-shot` ("does the label fit", the NLI models of the catalog) takes part in the
+  model selection: it runs on the bench, is scored on every example (the label with the highest
+  score; the examples teach it nothing, so none is left out) and gets its share and its `verdict`
+  in the table and in `report.json` like any other candidate. Its time per example is the time of
+  one text with all of its labels. `vectors` in its row means that the scores of the labels the
+  bench returned cannot be read; no new verdict word. The folder of this recipe is not written in
+  this version: a build that chooses it prints the table and the chosen model and ends with code 3.

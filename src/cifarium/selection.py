@@ -19,6 +19,7 @@ import enum
 import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 
@@ -31,16 +32,27 @@ BYTES_PER_MB = 1_000_000
 """The megabyte of ``limits.max_size_mb`` and of the reports: a million bytes."""
 
 # Recipes the build can evaluate. A candidate with another recipe is sorted out before the
-# walk, so the bench never gets it (``bench.embed_job`` refuses such a recipe).
-READY_RECIPES = frozenset({"embed-centroid"})
+# walk, so the bench never gets it (``bench.job_of`` refuses such a recipe).
+READY_RECIPES = frozenset({"embed-centroid", "zero-shot"})
 
 # A model made for English is sorted out when more than this share of the letters in the
 # examples is not Latin (ARCHITECTURE.md, section 12, question 8).
 NON_LATIN_SHARE = 0.5
 
-Embed = Callable[[catalog.Candidate, Sequence[str]], np.ndarray]
-"""Candidate and example texts -> one vector of unit length per text, as the bench returns
-them. Raises :class:`~cifarium.bench.BenchError` when the candidate cannot run."""
+
+class Embed(Protocol):
+    """The bench as the selection sees it: it runs the candidate's recipe on the example texts and
+    returns one row per text, in their order. The name stayed from the first recipe.
+
+    - ``embed-centroid``: called as ``bench(candidate, texts)``; a vector of unit length per text.
+    - ``zero-shot``: called as ``bench(candidate, texts, labels)``; the score of every label, in
+      the order of ``labels``, a softmax over them (``evaluate.zero_shot``).
+
+    Raises :class:`~cifarium.bench.BenchError` when the candidate cannot run.
+    """
+
+    def __call__(self, candidate: catalog.Candidate, texts: Sequence[str],
+                 labels: Sequence[Label] | None = None) -> np.ndarray: ...
 
 
 class Verdict(enum.Enum):
@@ -53,6 +65,7 @@ class Verdict(enum.Enum):
     RECIPE = "recipe"
     ACCURACY = "accuracy"
     VECTORS = "vectors"
+    """The answers of the bench cannot be scored: vectors, or for ``zero-shot`` the label scores."""
     BENCH = "bench"
     NOT_TRIED = "not-tried"
     """A lighter candidate had already passed."""
@@ -82,8 +95,9 @@ class Selection:
     outcomes: tuple[Outcome, ...]
     """One per candidate, in the order of the walk: the lightest first."""
     vectors: np.ndarray | None
-    """Vectors of the examples from the chosen candidate, so the centres of the labels can be
-    computed without running the bench again; None when nothing was chosen."""
+    """What the bench returned for the examples of the chosen candidate: for ``embed-centroid``
+    their vectors, so the centres of the labels can be computed without running the bench again;
+    for ``zero-shot`` the scores of the labels. None when nothing was chosen."""
 
     @property
     def chosen(self) -> Outcome | None:
@@ -126,7 +140,7 @@ def select(
         elif vectors is not None:
             outcome = Outcome(candidate, Verdict.NOT_TRIED, "a lighter model already passed", size)
         else:
-            outcome, vectors = _run(candidate, bench, texts, expected, names, config.pass_rate, size)
+            outcome, vectors = _run(candidate, bench, texts, expected, examples.labels, config.pass_rate, size)
         outcomes.append(outcome)
         if report is not None:
             report(outcome)
@@ -214,13 +228,16 @@ def _run(
     bench: Embed,
     texts: Sequence[str],
     expected: Sequence[str],
-    names: Sequence[str],
+    labels: Sequence[Label],
     pass_rate: float,
     size: int,
 ) -> tuple[Outcome, np.ndarray | None]:
-    """Run one candidate on the bench and score it. The vectors come back only when it passes."""
+    """Run one candidate on the bench and score it the way its recipe says. What the bench returned
+    comes back only when the candidate passes."""
+    zero_shot = candidate.recipe.kind == "zero-shot"
+    names = [label.name for label in labels]
     try:
-        vectors = bench(candidate, texts)
+        vectors = bench(candidate, texts, labels) if zero_shot else bench(candidate, texts)
     except BenchError as error:
         return Outcome(candidate, Verdict.BENCH, f"the bench failed: {_first_line(error)}", size,
                        error=str(error)), None
@@ -233,12 +250,17 @@ def _run(
         return Outcome(candidate, Verdict.VECTORS, f"the bench returned vectors that cannot be scored: "
                        f"{message}", size, error=message), None
     try:
-        evaluation = evaluate.leave_one_out(vectors, expected, names, pass_rate)
+        if zero_shot:
+            evaluation = evaluate.zero_shot(vectors, expected, names, pass_rate)
+        else:
+            evaluation = evaluate.leave_one_out(vectors, expected, names, pass_rate)
     except ValueError as error:
-        # The labels were checked before the walk, so what is left is the vectors: a count that
-        # does not match, NaN, a length other than 1. They belong to this candidate.
+        # The labels were checked before the walk, so what is left is the answers of the bench: a
+        # count that does not match, NaN, a vector of a length other than 1, scores that are not a
+        # softmax. They belong to this candidate.
+        what = "label scores" if zero_shot else "vectors"
         return Outcome(candidate, Verdict.VECTORS,
-                       f"the bench returned vectors that cannot be scored: {error}", size,
+                       f"the bench returned {what} that cannot be scored: {error}", size,
                        error=str(error)), None
     if not passes(evaluation):
         return Outcome(

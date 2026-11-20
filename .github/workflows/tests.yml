@@ -59,16 +59,17 @@ jobs:
         run: echo "path=$(python -c 'from cifarium import paths; print(paths.cache_dir())')" >> "$GITHUB_OUTPUT"
       # Only the downloads: the engine and the models. The key is made of the files that pin
       # what gets downloaded: the engine versions (vendor.py), the examples of the end-to-end
-      # build, which decide the models it runs (tests/test_build_e2e.py), and the catalog. A
-      # cache that is hit by its exact key is not saved again, so when the end-to-end test starts
-      # to download something these files do not name, add the file that names it here.
+      # build, which decide the models it runs (tests/test_build_e2e.py), the model of the
+      # zero-shot test (tests/test_zero_shot_e2e.py), and the catalog. A cache that is hit by its
+      # exact key is not saved again, so when the end-to-end test starts to download something
+      # these files do not name, add the file that names it here.
       - name: Restore the engine and the models
         uses: actions/cache@v6
         with:
           path: |
             ${{ steps.cache-dir.outputs.path }}/vendor
             ${{ steps.cache-dir.outputs.path }}/models
-          key: e2e-${{ runner.os }}-${{ hashFiles('src/cifarium/vendor.py', 'tests/test_build_e2e.py', 'src/cifarium/catalog/**') }}
+          key: e2e-${{ runner.os }}-${{ hashFiles('src/cifarium/vendor.py', 'tests/test_build_e2e.py', 'tests/test_zero_shot_e2e.py', 'src/cifarium/catalog/**') }}
       # The runner has no graphics card and no screen. The test never asks for a card, so the
       # bench starts Chrome without a window and computes on the processor.
       - name: Run the end-to-end test

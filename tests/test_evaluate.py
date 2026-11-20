@@ -244,3 +244,80 @@ def test_float32_vectors_from_the_bench_are_accepted():
     vectors, expected, names = random_task(2, {"a": 4, "b": 4})
     result = evaluate.leave_one_out(vectors.astype("<f4"), expected, names, pass_rate=0.5)
     assert result.total == 8
+
+
+# --- recipe zero-shot: the label with the highest score ---
+
+
+def softmax(rows: list[list[float]]) -> np.ndarray:
+    logits = np.array(rows, dtype=np.float64)
+    exp = np.exp(logits - logits.max(axis=1, keepdims=True))
+    return exp / exp.sum(axis=1, keepdims=True)
+
+
+def test_zero_shot_names_the_label_with_the_highest_score_and_counts_every_example():
+    scores = softmax([[3, 0, 0], [0, 2, 1], [0, 0, 5], [4, 1, 0]])
+    expected = ["a", "b", "c", "b"]
+
+    result = evaluate.zero_shot(scores, expected, ["a", "b", "c"], pass_rate=0.75)
+
+    assert (result.total, result.correct, result.accuracy, result.passed) == (4, 3, 0.75, True)
+    [miss] = result.misses
+    assert (miss.index, miss.expected, miss.predicted) == (3, "b", "a")
+    assert miss.score == pytest.approx(scores[3, 0]) and miss.expected_score == pytest.approx(scores[3, 1])
+
+
+def test_zero_shot_gives_a_tie_to_the_label_listed_first():
+    scores = np.array([[0.5, 0.5], [0.5, 0.5]])
+
+    result = evaluate.zero_shot(scores, ["a", "b"], ["a", "b"], pass_rate=0.5)
+
+    assert result.correct == 1 and result.misses[0].predicted == "a" and result.misses[0].expected == "b"
+
+
+def test_zero_shot_seventeen_of_twenty_pass_eighty_five_percent():
+    expected = ["a", "b"] * 10
+    rows = [[0.9, 0.1] if label == "a" else [0.1, 0.9] for label in expected]
+    for k in (1, 3, 5):  # three examples of b get the score of a
+        rows[k] = [0.9, 0.1]
+
+    result = evaluate.zero_shot(np.array(rows), expected, ["a", "b"], pass_rate=0.85)
+
+    assert (result.correct, result.passed) == (17, True)
+
+
+def test_zero_shot_accepts_float32_scores_that_add_up_to_one_in_float32():
+    scores = softmax([[0.3, 1.7, -2.0]] * 2).astype("<f4")
+    assert evaluate.zero_shot(scores, ["b", "b"], ["a", "b", "c"], pass_rate=1.0).correct == 2
+
+
+@pytest.mark.parametrize(
+    ("scores", "said"),
+    [
+        (np.array([[0.5, 0.5]]), "one row of scores per example"),
+        (np.array([0.5, 0.5]), "one row of scores per example"),
+        (np.array([[1.0], [1.0]]), "2 scores per example, one per label, got 1"),
+        (np.array([[np.nan, 0.5], [0.5, 0.5]]), "NaN"),
+        (np.array([[1.5, -0.5], [0.5, 0.5]]), "not between 0 and 1"),
+        (np.array([[0.5, 0.5], [0.9, 0.9]]), "example 1 add up to 1.8"),
+    ],
+    ids=["too-few-rows", "flat", "one-column", "nan", "outside", "not-a-softmax"],
+)
+def test_zero_shot_refuses_scores_that_cannot_be_read(scores, said):
+    with pytest.raises(ValueError, match=said):
+        evaluate.zero_shot(scores, ["a", "b"], ["a", "b"], pass_rate=0.5)
+
+
+@pytest.mark.parametrize(
+    ("expected", "names", "said"),
+    [
+        ([], ["a", "b"], "no examples"),
+        (["a", "a"], ["a", "a"], "repeat"),
+        (["a", "a"], ["a"], "two labels"),
+        (["a", "c"], ["a", "b"], r"\['c'\] are not among"),
+    ],
+)
+def test_zero_shot_checks_the_labels_as_the_centres_do(expected, names, said):
+    scores = np.full((len(expected), len(names)), 1 / len(names))
+    with pytest.raises(ValueError, match=said):
+        evaluate.zero_shot(scores, expected, names, pass_rate=0.5)

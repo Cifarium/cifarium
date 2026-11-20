@@ -32,7 +32,7 @@ import numpy as np
 
 from . import bundle, catalog, config, evaluate, examples, exitcodes, hub, paths, results, selection, vendor
 from . import report as reporting
-from .bench import Bench, BenchError, decode_vectors, embed_job, open_bench
+from .bench import Bench, BenchError, decode_scores, decode_vectors, embed_job, job_of, open_bench
 from .selection import BYTES_PER_MB, Outcome, Verdict
 
 TIME_LIMIT_S = 300.0
@@ -46,6 +46,10 @@ SPEED_INPUTS = 20
 """Examples of the run that measures the speed of a candidate whose vectors came from the cache:
 the first call warms up, the median is of the others. The same number is what a build on a small
 set measures anyway; on a set of a thousand it keeps the run from costing what the first one did."""
+
+WRITTEN_RECIPES = frozenset({"embed-centroid"})
+"""Recipes whose folder :func:`bundle.write` writes. A chosen candidate of another recipe (``zero-shot``,
+until its folder is written) ends the build with code 3 after the table and the chosen model."""
 
 LATENCY = "latency"
 """Verdict word of a candidate that passed on accuracy and was too slow. It lives here and not
@@ -200,10 +204,12 @@ def choose(
 
 
 class ChromeEmbed:
-    """The selection's bench function on a running bench.
+    """The selection's bench function (:class:`selection.Embed`) on a running bench.
 
-    Takes the vectors the cache has (:mod:`results`), downloads the files of a candidate that has
-    texts left, runs the job of its recipe in a new tab for those texts alone and saves what it got.
+    For ``embed-centroid`` it takes the vectors the cache has (:mod:`results`), downloads the files of
+    a candidate that has texts left, runs the job of its recipe in a new tab for those texts alone
+    and saves what it got. For ``zero-shot`` it runs every text with every label and keeps nothing:
+    the scores depend on the labels and their hypotheses too, and the cache knows only vectors.
     The times are never taken from the cache: :meth:`speed` gives the ones of a run of this build,
     and runs one itself when the vectors came from the cache. ``cache=None`` is a bench without
     a cache.
@@ -219,12 +225,19 @@ class ChromeEmbed:
         """Vectors computed on the bench."""
         self._speeds: dict[tuple[str, str], Speed] = {}
         self._texts: dict[tuple[str, str], list[str]] = {}
+        self._labels: dict[tuple[str, str], list[config.Label]] = {}
 
-    def __call__(self, candidate: catalog.Candidate, texts: Sequence[str]) -> np.ndarray:
+    def __call__(self, candidate: catalog.Candidate, texts: Sequence[str],
+                 labels: Sequence[config.Label] | None = None) -> np.ndarray:
         entry = candidate.entry
         key = _key(candidate)
         self._speeds.pop(key, None)
         self._texts[key] = list(texts)
+        if candidate.recipe.kind == "zero-shot":
+            if not labels:
+                raise ValueError(f"{entry.id}: the recipe zero-shot needs the labels")
+            self._labels[key] = list(labels)
+            return self._score(candidate, texts, labels)
         hashes = [results.text_hash(text) for text in texts]
         wanted = dict(zip(hashes, texts))  # one entry per text, in the order of the examples
         known = self.cache.load(candidate) if self.cache is not None else {}
@@ -254,6 +267,16 @@ class ChromeEmbed:
             self._save(candidate, {digest: vectors[digest] for digest in wanted})
         return np.stack([vectors[digest] for digest in hashes])
 
+    def _score(self, candidate: catalog.Candidate, texts: Sequence[str], labels: Sequence[config.Label]) -> np.ndarray:
+        """Every text with every label, in one job; its times are the candidate's in this build:
+        each is one text with all of its labels, which is what a site waits for."""
+        entry = candidate.entry
+        download(entry, self.say)
+        self.say(f"  {entry.id}: running {len(texts)} examples on the processor, {len(labels)} labels each")
+        result = self.bench.run(job_of(candidate, list(texts), labels), timeout=TIME_LIMIT_S)
+        self._speeds[_key(candidate)] = Speed.of(result)
+        return decode_scores(result)
+
     def speed(self, candidate: catalog.Candidate) -> Speed:
         """The times of the candidate in this build. When its vectors came from the cache, or most
         of them, this is a run of the first :data:`SPEED_INPUTS` examples made now."""
@@ -263,7 +286,7 @@ class ChromeEmbed:
             texts = list(dict.fromkeys(self._texts[key]))[:SPEED_INPUTS]
             download(entry, self.say)
             self.say(f"  {entry.id}: measuring the speed on {len(texts)} examples")
-            result = self.bench.run(embed_job(entry, candidate.recipe, texts), timeout=TIME_LIMIT_S)
+            result = self.bench.run(job_of(candidate, texts, self._labels.get(key, ())), timeout=TIME_LIMIT_S)
             self._speeds[key] = Speed.of(result)
         return self._speeds[key]
 
@@ -276,9 +299,11 @@ class ChromeEmbed:
             self.say(f"  {candidate.entry.id}: the vectors could not be saved to the cache "
                      f"({_first_line(error)}); the next build computes them again")
 
-    def single_thread(self, candidate: catalog.Candidate, texts: Sequence[str]) -> Speed:
-        """Times of the candidate in one thread, on the first :data:`SINGLE_THREAD_INPUTS` texts."""
-        job = embed_job(candidate.entry, candidate.recipe, texts[:SINGLE_THREAD_INPUTS], threads=1)
+    def single_thread(self, candidate: catalog.Candidate, texts: Sequence[str],
+                      labels: Sequence[config.Label] = ()) -> Speed:
+        """Times of the candidate in one thread, on the first :data:`SINGLE_THREAD_INPUTS` texts
+        (with every one of ``labels`` for ``zero-shot``)."""
+        job = job_of(candidate, texts[:SINGLE_THREAD_INPUTS], labels, threads=1)
         speed = Speed.of(self.bench.run(job, timeout=TIME_LIMIT_S))
         if speed.threads != 1:
             # The page reports what the engine used; anything else means the job's field was lost.
@@ -349,7 +374,7 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
                 _say(f"  {chosen.outcome.candidate.entry.id}: measuring one thread "
                      f"on {min(len(texts), SINGLE_THREAD_INPUTS)} examples")
                 try:
-                    single = embed.single_thread(chosen.outcome.candidate, texts)
+                    single = embed.single_thread(chosen.outcome.candidate, texts, items.labels)
                 except BenchError as error:
                     single = _first_line(error)
     except (vendor.VendorError, hub.HubError, BenchError, OSError) as error:
@@ -380,6 +405,12 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
         _say(line)
 
     assert result.vectors is not None
+    if chosen.outcome.candidate.recipe.kind not in WRITTEN_RECIPES:
+        # The selection and the report know the recipe; the folder for it does not exist yet, and
+        # the folder of an earlier build in `output` stays as it was.
+        print(f"\nFAILED: {chosen.outcome.candidate.entry.id} passed, but this version of cifarium cannot "
+              f"write the folder of the recipe {chosen.outcome.candidate.recipe.kind} yet.", file=sys.stderr)
+        return exitcodes.ENVIRONMENT
     names = [label.name for label in items.labels]
     centres = evaluate.centroids(result.vectors, [item.expected for item in items.items], names)
     # The manifest the folder will get, from the same function that writes it: the report names the

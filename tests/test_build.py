@@ -83,7 +83,7 @@ class FakeBench:
         self.answers = answers
         self.calls: list[str] = []
 
-    def __call__(self, candidate: catalog.Candidate, texts) -> np.ndarray:
+    def __call__(self, candidate: catalog.Candidate, texts, *labels) -> np.ndarray:
         self.calls.append(candidate.entry.id)
         answer = self.answers[candidate.entry.id]
         if isinstance(answer, Exception):
@@ -179,6 +179,17 @@ def test_a_failed_bench_is_a_refusal_and_the_walk_goes_on():
     assert verdicts(result.rows) == [("a", "bench"), ("b", "passed")]
 
 
+def test_a_zero_shot_candidate_is_checked_on_speed_like_any_other():
+    # Rows of 1 and 0 on two labels are a softmax over them as well as unit vectors.
+    zero = replace(make("z", 10), recipe=catalog.Recipe("classify", "zero-shot", {}))
+    bench = FakeBench({"z": (good(), 80.0), "b": (good(), 1.0)})
+
+    result, _ = run_choose([zero, make("b", 20)], bench, settings(limit_ms=50))
+
+    assert verdicts(result.rows) == [("z", LATENCY), ("b", "passed")]
+    assert result.rows[0].outcome.evaluation.correct == 20
+
+
 def test_the_usual_answer_is_the_median_of_the_calls_after_the_first():
     measured = Speed.of({"timesMs": [400.0, 10.0, 30.0, 20.0, 12.0], "loadMs": 900.0,
                          "threads": 4, "crossOriginIsolated": True})
@@ -216,6 +227,15 @@ class FakeChrome:
         self.jobs.append(job)
         if job.get("threads") == 1 and self.single_thread is not None:
             raise self.single_thread
+        times = [3 * self.ms] + [self.ms * (2 if job.get("threads") == 1 else 1)] * (len(job["inputs"]) - 1)
+        measured = {"loadMs": 500.0, "timesMs": times, "threads": 4 if self.ignores_threads else job.get("threads", 4),
+                    "crossOriginIsolated": True, "events": []}
+        if job["operation"] == "zero-shot":
+            # A hypothesis that names the topic of the text wins: a softmax over the labels.
+            logits = np.array([[2.0 if any(topic in text and topic in sentence for topic in TOPICS) else 0.0
+                                for sentence in job["hypotheses"]] for text in job["inputs"]])
+            scores = np.exp(logits) / np.exp(logits).sum(axis=1, keepdims=True)
+            return {"count": len(scores), "labels": len(job["hypotheses"]), "scores": scores.tolist(), **measured}
         rows = np.array([[1.0 if topic in text else 0.0 for topic in TOPICS] for text in job["inputs"]])
         rows = (rows / np.linalg.norm(rows, axis=1, keepdims=True)).astype("<f4")
         # The model of the real catalog returns as many numbers as the catalog says it does;
@@ -224,11 +244,8 @@ class FakeChrome:
                         for recipe in [candidate.recipe]
                         if candidate.entry.repo == job["model"] and recipe.kind == "embed-centroid")
         rows = np.pad(rows, ((0, 0), (0, promised - rows.shape[1])))
-        times = [3 * self.ms] + [self.ms * (2 if job.get("threads") == 1 else 1)] * (len(rows) - 1)
-        return {"count": len(rows), "dims": promised, "loadMs": 500.0, "timesMs": times,
-                "vectors": base64.b64encode(rows.tobytes()).decode("ascii"),
-                "threads": 4 if self.ignores_threads else job.get("threads", 4),
-                "crossOriginIsolated": True, "events": []}
+        return {"count": len(rows), "dims": promised,
+                "vectors": base64.b64encode(rows.tobytes()).decode("ascii"), **measured}
 
 
 @dataclass
@@ -942,3 +959,70 @@ def test_what_the_build_says_about_the_cache():
         "Vectors of the examples: 4 taken from the cache, 1 computed on the bench.")
     assert build.describe_cache(4, 1, "some folder")[2] == (
         "  The cache is some folder; delete that folder to compute every vector again.")
+
+
+# --- the recipe zero-shot -----------------------------------------------------------------------
+
+
+def nli() -> catalog.Candidate:
+    return next(c for c in catalog.candidates("classify") if c.entry.id == "nli-deberta-v3-xsmall")
+
+
+def test_a_zero_shot_candidate_runs_every_text_with_the_hypotheses_of_its_labels_and_keeps_nothing(tmp_path, chrome):
+    lines: list[str] = []
+    embed = build.ChromeEmbed(chrome, lines.append, results.Cache(tmp_path / "results"))
+    texts = ["about shipping", "about returns", "about shipping"]
+    labels = [Label("shipping", "where the shipping is"), Label("returns"), Label("technical")]
+
+    scores = embed(nli(), texts, labels)
+
+    [job] = chrome.jobs
+    assert job["operation"] == "zero-shot" and job["inputs"] == texts and "threads" not in job
+    assert job["hypotheses"] == ["This example is about shipping.", "This example is about returns.",
+                                 "This example is about technical."]
+    assert scores.shape == (3, 3) and np.argmax(scores, axis=1).tolist() == [0, 1, 0]
+    assert lines == ["  nli-deberta-v3-xsmall: running 3 examples on the processor, 3 labels each"]
+    # The cache keeps vectors only: nothing is read, counted or written for the scores.
+    assert (embed.reused, embed.computed) == (0, 0)
+    assert not (tmp_path / "results").exists()
+    # The times of this run are the candidate's in this build: no second run for them.
+    assert embed.speed(nli()).median_ms == 10.0 and len(chrome.jobs) == 1
+    embed(nli(), texts, labels)
+    assert len(chrome.jobs) == 2
+
+
+def test_the_single_thread_run_of_a_zero_shot_candidate_carries_its_labels(chrome):
+    embed = build.ChromeEmbed(chrome, lambda message: None)
+
+    speed = embed.single_thread(nli(), [f"about shipping {k}" for k in range(8)], [Label(t) for t in TOPICS])
+
+    [job] = chrome.jobs
+    assert (job["operation"], job["threads"], len(job["inputs"])) == ("zero-shot", 1, build.SINGLE_THREAD_INPUTS)
+    assert len(job["hypotheses"]) == len(TOPICS) and speed.threads == 1
+
+
+def test_a_zero_shot_candidate_asked_without_its_labels_is_a_defect(chrome):
+    with pytest.raises(ValueError, match="needs the labels"):
+        build.ChromeEmbed(chrome, lambda message: None)(nli(), ["about shipping"])
+
+
+def test_a_chosen_zero_shot_candidate_is_printed_and_the_build_stops_before_the_folder_with_code_3(
+        tmp_path, chrome, monkeypatch, capsys):
+    only = nli()
+    monkeypatch.setattr(catalog, "candidates", lambda task: (only,))
+
+    code = build.run(write_task(tmp_path))
+
+    out, err = capsys.readouterr()
+    assert code == exitcodes.ENVIRONMENT == 3
+    assert "nli-deberta-v3-xsmall: running 12 examples on the processor, 3 labels each" in out
+    assert any(line.strip().startswith("nli-deberta-v3-xsmall  zero-shot") and "passed" in line
+               for line in table_of(out))
+    assert "Chosen: nli-deberta-v3-xsmall" in out and "accuracy      12 of 12 examples (100%)" in out
+    assert "one thread    20.0 ms median of 5 examples" in out
+    assert "Vectors of the examples" not in out
+    assert ("FAILED: nli-deberta-v3-xsmall passed, but this version of cifarium cannot write the folder of "
+            "the recipe zero-shot yet.") in err
+    # Nothing is written: not the folder, and not a report that would speak of a folder.
+    assert chrome.written == [] and not (tmp_path / "cifarium-out").exists()
+    assert [(job["operation"], job.get("threads")) for job in chrome.jobs] == [("zero-shot", None), ("zero-shot", 1)]

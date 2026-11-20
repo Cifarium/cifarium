@@ -11,14 +11,22 @@ import pytest
 from cifarium import catalog, vendor
 from cifarium.bench import (
     DTYPE_SUFFIXES,
+    TEMPLATES,
+    BenchError,
+    decode_scores,
     decode_vectors,
     embed_job,
     engine_urls,
     external_data_files,
     graph_name,
     has_real_gpu,
+    hypotheses,
+    hypothesis_language,
+    job_of,
     start_chrome,
+    zero_shot_job,
 )
+from cifarium.config import Label
 
 INTEL = {"webgpu": {"vendor": "intel", "isFallbackAdapter": False}}
 SOFTWARE = {"webgpu": {"vendor": "google", "isFallbackAdapter": True}}
@@ -73,6 +81,7 @@ def test_a_job_takes_pooling_and_prefix_from_the_recipe():
     entry = _entry("multilingual-e5-small")
     job = embed_job(entry, _centroid_recipe(entry), ("Где моя посылка?",))
     assert job == {
+        "operation": "embed",
         "model": "Xenova/multilingual-e5-small",
         "dtype": "q8",
         "device": "wasm",
@@ -112,6 +121,107 @@ def test_a_zero_shot_recipe_makes_no_vector_job():
     entry = _entry("mobilebert-uncased-mnli")
     with pytest.raises(ValueError, match="does not turn text into vectors"):
         embed_job(entry, entry.recipes[0], ["a"])
+
+
+# --- the recipe zero-shot: hypotheses and its job ---------------------------------------------------
+
+
+def test_a_zero_shot_job_carries_the_hypotheses_whole_and_the_model_fields():
+    entry = _entry("nli-deberta-v3-xsmall")
+    job = zero_shot_job(entry, entry.recipes[0], ("Where is my card?",), ["It is about a card.", "It is about money."])
+    assert job == {
+        "operation": "zero-shot",
+        "model": "Xenova/nli-deberta-v3-xsmall",
+        "dtype": "q8",
+        "device": "wasm",
+        "inputs": ["Where is my card?"],
+        "modelFileName": "model",
+        "externalData": 0,
+        "hypotheses": ["It is about a card.", "It is about money."],
+    }
+    assert zero_shot_job(entry, entry.recipes[0], ["a"], ["x", "y"], threads=1)["threads"] == 1
+
+
+@pytest.mark.parametrize("sentences", [[], ["only one"], ["fine", ""]])
+def test_a_zero_shot_job_needs_two_hypotheses_that_are_not_empty(sentences):
+    entry = _entry("nli-deberta-v3-xsmall")
+    with pytest.raises(ValueError, match="at least two hypotheses"):
+        zero_shot_job(entry, entry.recipes[0], ["a"], sentences)
+
+
+def test_a_vector_recipe_makes_no_zero_shot_job():
+    entry = _entry("all-minilm-l6-v2")
+    with pytest.raises(ValueError, match="does not check hypotheses"):
+        zero_shot_job(entry, _centroid_recipe(entry), ["a"], ["x", "y"])
+
+
+def test_the_job_of_a_candidate_follows_its_recipe():
+    labels = [Label("refund", "money back for an order"), Label("delivery")]
+    by_kind = {candidate.recipe.kind: candidate for candidate in catalog.candidates("classify")}
+
+    vectors = job_of(by_kind["embed-centroid"], ["a"], labels)
+    scores = job_of(by_kind["zero-shot"], ["a"], labels, threads=1)
+
+    assert vectors["operation"] == "embed" and "hypotheses" not in vectors
+    assert scores["operation"] == "zero-shot" and scores["threads"] == 1
+    assert scores["hypotheses"] == ["This example is about refund.", "This example is about delivery."]
+
+
+@pytest.mark.parametrize(
+    ("labels", "expected"),
+    [
+        # The name, with underscores as spaces; the description stays out (it cost points).
+        ([Label("top_up", "adding money to the account"), Label("new_card"), Label("e-mail")],
+         ["This example is about top up.", "This example is about new card.", "This example is about e-mail."]),
+        # Russian labels get the Russian sentence, whatever their descriptions say.
+        ([Label("будильник", "set or remove an alarm"), Label("почта")],
+         ["Этот текст про будильник.", "Этот текст про почта."]),
+        # English names of a Russian task: the names are what goes in, so English.
+        ([Label("delivery", "где посылка"), Label("refund", "возврат денег")],
+         ["This example is about delivery.", "This example is about refund."]),
+        # Other scripts get the English sentence.
+        ([Label("天气"), Label("音乐")], ["This example is about 天气.", "This example is about 音乐."]),
+        # Braces and dollars in a label are text: nothing in them is read as a placeholder.
+        ([Label("a {} b"), Label("$& and $1")],
+         ["This example is about a {} b.", "This example is about $& and $1."]),
+    ],
+    ids=["english", "russian", "english-names-russian-descriptions", "other-script", "braces-and-dollars"],
+)
+def test_the_hypotheses_of_the_labels(labels, expected):
+    assert hypotheses(labels) == expected
+
+
+@pytest.mark.parametrize(
+    ("texts", "language"),
+    [
+        (["delivery", "refund"], "en"),
+        (["доставка", "возврат"], "ru"),
+        (["Где посылка abc"], "ru"),  # 10 Cyrillic letters of 13
+        (["ab вг"], "en"),  # exactly half is not more than half
+        (["ab вгд"], "ru"),
+        (["123", "!?"], "en"),  # no letters at all
+        (["Ελληνικά", "ქართული"], "en"),
+    ],
+)
+def test_the_language_of_the_hypotheses_is_russian_when_most_letters_are_cyrillic(texts, language):
+    assert hypothesis_language(texts) == language
+
+
+def test_every_template_has_one_place_for_the_label():
+    assert set(TEMPLATES) == {"en", "ru"}
+    assert all(template.count("{}") == 1 for template in TEMPLATES.values())
+
+
+def test_scores_are_decoded_as_rows_of_floats():
+    scores = decode_scores({"scores": [[0.25, 0.75], [1.0, 0.0], [0.5, 0.5]]})
+    assert scores.shape == (3, 2) and scores.dtype == np.float64
+    assert scores[0].tolist() == [0.25, 0.75]
+    assert decode_scores({"scores": []}).shape == (0, 0)
+
+
+def test_rows_of_scores_of_different_lengths_are_a_page_that_went_wrong():
+    with pytest.raises(BenchError, match="rows of"):
+        decode_scores({"scores": [[0.5, 0.5], [1.0]]})
 
 
 @pytest.mark.parametrize(

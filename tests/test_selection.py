@@ -86,10 +86,13 @@ class FakeBench:
         self.answers = answers
         self.calls: list[str] = []
         self.texts: list[list[str]] = []
+        self.labels: list[list[Label] | None] = []
+        """What each call got as labels: None when the bench was called with two arguments."""
 
-    def __call__(self, candidate: catalog.Candidate, texts) -> np.ndarray:
+    def __call__(self, candidate: catalog.Candidate, texts, *labels) -> np.ndarray:
         self.calls.append(candidate.entry.id)
         self.texts.append(list(texts))
+        self.labels.append(list(labels[0]) if labels else None)
         answer = self.answers[candidate.entry.id]
         if isinstance(answer, BaseException):
             raise answer
@@ -199,7 +202,7 @@ def test_equal_weights_keep_the_order_of_the_catalog_and_the_recipes_of_one_mode
         ("aaa", "embed-centroid"), ("bbb", "embed-centroid"),
         ("ccc", "embed-centroid"), ("ccc", "zero-shot"),
     ]
-    assert bench.calls == ["aaa", "bbb", "ccc"]
+    assert bench.calls == ["aaa", "bbb", "ccc", "ccc"]
 
 
 def test_the_default_engine_weight_is_that_of_the_pinned_files():
@@ -307,7 +310,14 @@ def test_a_heavy_model_is_sorted_out_but_a_lighter_one_behind_it_in_the_catalog_
     assert verdicts(result) == {"big": Verdict.SIZE, "small": Verdict.PASSED}
 
 
-def test_the_recipe_that_is_not_ready_never_reaches_the_bench():
+def test_both_recipes_of_the_catalog_are_ready():
+    assert selection.READY_RECIPES == set(catalog.RECIPES) == {"embed-centroid", "zero-shot"}
+
+
+def test_a_recipe_that_is_not_ready_never_reaches_the_bench(monkeypatch):
+    # Both recipes of the catalog are ready; the rule stays for the next one (a chat model).
+    monkeypatch.setattr(selection, "READY_RECIPES", frozenset({"embed-centroid"}))
+
     result, bench = run([make("nli", 10 * MB, kind="zero-shot"), make("embed", 20 * MB)], {"embed": vectors()})
 
     assert bench.calls == ["embed"]
@@ -315,7 +325,8 @@ def test_the_recipe_that_is_not_ready_never_reaches_the_bench():
     assert result.outcomes[0].message == "the recipe zero-shot is not ready yet"
 
 
-def test_the_first_reason_found_is_told_license_before_size_before_language_before_recipe():
+def test_the_first_reason_found_is_told_license_before_size_before_language_before_recipe(monkeypatch):
+    monkeypatch.setattr(selection, "READY_RECIPES", frozenset({"embed-centroid"}))
     russian = examples_of(texts=["привет мир"] * 20)
     everything_wrong = make("x", 500 * MB, license="unknown", languages=("en",), kind="zero-shot")
     config = settings()
@@ -447,15 +458,16 @@ def test_examples_that_do_not_fit_their_labels_stop_everything_before_the_bench_
 # --- the real catalog --------------------------------------------------------------------------
 
 
-def test_on_the_real_catalog_russian_examples_reach_only_the_multilingual_models_with_a_ready_recipe():
+def test_on_the_real_catalog_russian_examples_reach_only_the_multilingual_models():
     candidates = catalog.candidates("classify")
     russian = examples_of(texts=["Где моя посылка, трек не обновляется"] * 20)
+    # Rows of 0 and 1 on two axes are unit vectors and a softmax over two labels at once.
     bench = FakeBench({entry_id: vectors(flipped=5) for entry_id in {c.entry.id for c in candidates}})
 
     result = select(settings(license="any", limits=Limits(max_size_mb=10_000)), russian, candidates, bench)
 
-    reached = {(c.entry.id, c.recipe.kind) for c in candidates if "multi" in c.entry.languages
-               and c.recipe.kind == "embed-centroid"}
+    reached = {(c.entry.id, c.recipe.kind) for c in candidates if "multi" in c.entry.languages}
+    assert ("mdeberta-v3-base-xnli", "zero-shot") in reached
     assert {(o.candidate.entry.id, o.candidate.recipe.kind) for o in result.outcomes if o.tried} == reached
     assert [o.size_bytes for o in result.outcomes] == sorted(o.size_bytes for o in result.outcomes)
     assert result.chosen is None
@@ -472,3 +484,104 @@ def test_on_the_real_catalog_permissive_english_work_starts_from_the_lightest_mo
     by_verdict = {outcome.candidate.entry.id: outcome.verdict for outcome in result.outcomes}
     assert by_verdict["embeddinggemma-300m"] is Verdict.LICENSE  # gemma is not a permissive license
     assert by_verdict["multilingual-e5-small"] is Verdict.NOT_TRIED
+
+
+# --- the recipe zero-shot ------------------------------------------------------------------------
+
+
+def label_scores(misses: int = 0, expected: list[str] | None = None) -> np.ndarray:
+    """A softmax over the two labels per example: 0.8 for the right one, except that the first
+    ``misses`` examples give it to the other label."""
+    expected = EXPECTED if expected is None else expected
+    rows = np.full((len(expected), len(LABELS)), 0.2)
+    for k, label in enumerate(expected):
+        right = LABELS.index(label)
+        rows[k, right if k >= misses else 1 - right] = 0.8
+    return rows
+
+
+def test_a_zero_shot_candidate_gets_the_labels_with_their_descriptions_and_is_scored_without_centres():
+    described = Examples(Path("examples.jsonl"), examples_of().items,
+                         (Label("alpha", "the first letter"), Label("beta")))
+    answer = label_scores(misses=3)
+
+    result, bench = run([make("nli", kind="zero-shot")], {"nli": answer}, examples=described)
+
+    assert bench.labels == [[Label("alpha", "the first letter"), Label("beta")]]
+    assert bench.texts == [[f"text {k}" for k in range(20)]]
+    chosen = result.chosen
+    assert chosen is not None and chosen.candidate.recipe.kind == "zero-shot"
+    assert (chosen.evaluation.correct, chosen.evaluation.total) == (17, 20)
+    assert chosen.message == "got 17 of 20 examples (85%)"
+    # Every example counts as it is: the misses are the first three, with the scores of both labels.
+    assert [(miss.index, miss.predicted, miss.score, miss.expected_score) for miss in chosen.evaluation.misses] == [
+        (0, "beta", 0.8, 0.2), (1, "alpha", 0.8, 0.2), (2, "beta", 0.8, 0.2)]
+    assert np.array_equal(result.vectors, answer)
+
+
+def test_a_vector_candidate_is_still_asked_with_two_arguments():
+    # Benches written for vectors alone (examples/measure.py) keep working.
+    result, bench = run([make("embed")], {"embed": vectors()})
+
+    assert bench.labels == [None] and result.chosen is not None
+
+
+def test_a_zero_shot_candidate_below_the_pass_rate_is_refused_on_accuracy_and_the_walk_goes_on():
+    candidates = [make("nli", 10 * MB, kind="zero-shot"), make("embed", 20 * MB)]
+
+    result, bench = run(candidates, {"nli": label_scores(misses=4), "embed": vectors()})
+
+    assert bench.calls == ["nli", "embed"]
+    assert verdicts(result) == {"nli": Verdict.ACCURACY, "embed": Verdict.PASSED}
+    assert result.outcomes[0].message == "got 16 of 20 examples (80%), below the pass rate of 85%"
+
+
+def test_zero_shot_and_vector_candidates_share_one_walk_by_weight():
+    candidates = [make("embed", 30 * MB), make("nli", 20 * MB, kind="zero-shot")]
+
+    result, bench = run(candidates, {"nli": label_scores(), "embed": vectors()})
+
+    assert bench.calls == ["nli"]
+    assert verdicts(result) == {"nli": Verdict.PASSED, "embed": Verdict.NOT_TRIED}
+
+
+@pytest.mark.parametrize(
+    ("bad", "said"),
+    [
+        (np.full((20, 2), 0.9), "add up to 1.8"),
+        (np.full((20, 3), 1 / 3), "2 scores per example, one per label, got 3"),
+        (label_scores()[:-1], "one row of scores per example"),
+    ],
+    ids=["not-a-softmax", "a-score-too-many", "wrong-count"],
+)
+def test_label_scores_that_cannot_be_scored_fail_the_candidate_with_the_word_vectors(bad, said):
+    result, bench = run([make("odd", 10 * MB, kind="zero-shot"), make("fine", 20 * MB)],
+                        {"odd": bad, "fine": vectors()})
+
+    odd = result.outcomes[0]
+    assert odd.verdict is Verdict.VECTORS
+    assert odd.message.startswith("the bench returned label scores that cannot be scored: ")
+    assert said in odd.error
+    assert result.chosen.candidate.entry.id == "fine"
+
+
+def test_a_bench_error_on_a_zero_shot_candidate_is_its_reason():
+    result, _ = run([make("nli", kind="zero-shot"), make("fine", 20 * MB)],
+                    {"nli": BenchError("The job exceeded its time limit of 300 s."), "fine": vectors()})
+
+    assert verdicts(result) == {"nli": Verdict.BENCH, "fine": Verdict.PASSED}
+    assert result.outcomes[0].message == "the bench failed: The job exceeded its time limit of 300 s."
+
+
+def test_on_the_real_catalog_english_examples_reach_the_english_zero_shot_model_when_the_vectors_fail():
+    candidates = catalog.candidates("classify")
+    answers = {c.entry.id: vectors(flipped=5) for c in candidates}
+    answers["nli-deberta-v3-xsmall"] = label_scores()
+
+    result = select(settings(), examples_of(), candidates, FakeBench(answers))
+
+    by_verdict = {o.candidate.entry.id: o.verdict for o in result.outcomes}
+    assert by_verdict["mobilebert-uncased-mnli"] is Verdict.LICENSE  # license unknown
+    assert by_verdict["all-minilm-l6-v2"] is by_verdict["bge-small-en-v1.5"] is Verdict.ACCURACY
+    assert result.chosen.candidate.entry.id == "nli-deberta-v3-xsmall"
+    assert by_verdict["mdeberta-v3-base-xnli"] is Verdict.SIZE  # 382 MB with the engine

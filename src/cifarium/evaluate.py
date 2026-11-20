@@ -1,15 +1,20 @@
-"""Recipe "by examples" (``embed-centroid``): label centres and how well they classify.
+"""How well a recipe classifies the examples. Plain numpy, no browser.
 
-Plain numpy, no browser. The bench turns every example into a vector once; the
-rest happens here (ARCHITECTURE.md, section 3, "Classification"):
+Recipe "by examples" (``embed-centroid``): label centres. The bench turns every example into a
+vector once; the rest happens here (ARCHITECTURE.md, section 3, "Classification"):
 
 - the centre of a label is the mean of its examples' vectors, scaled to unit length;
 - a text gets the label whose centre is nearest, that is, has the largest dot product;
 - the score at build time checks every example against centres computed without it.
 
-Vectors must be of unit length, as the bench returns them. Labels are named by
-text and kept in one order, ``names``: the order of the settings, or of first
-appearance in the examples (``Examples.labels``). That order breaks ties.
+Vectors must be of unit length, as the bench returns them.
+
+Recipe "does the label fit" (``zero-shot``): the bench returns the score of every label for every
+example, and :func:`zero_shot` takes the label with the highest one. The examples taught the model
+nothing, so every example is checked as it is.
+
+Labels are named by text and kept in one order, ``names``: the order of the settings, or of first
+appearance in the examples (``Examples.labels``). That order breaks ties, in both recipes.
 """
 
 from __future__ import annotations
@@ -38,10 +43,12 @@ class Miss:
     predicted: str
     """The label that was named instead."""
     score: float
-    """Dot product with the centre of the named label, from -1 to 1."""
+    """Dot product with the centre of the named label, from -1 to 1; for ``zero-shot`` the score of
+    the named label, from 0 to 1."""
     expected_score: float | None
     """Dot product with the centre of the expected label; None when the label had no
-    centre left, because its only example was the one being checked."""
+    centre left, because its only example was the one being checked. For ``zero-shot`` the
+    score of the expected label."""
 
 
 @dataclass(frozen=True)
@@ -132,6 +139,35 @@ def held_out(
     return _evaluation(vectors @ centres.T, codes, names, pass_rate)
 
 
+def zero_shot(
+    scores: np.ndarray, expected: Sequence[str], names: Sequence[str], pass_rate: float
+) -> Evaluation:
+    """Recipe ``zero-shot``: every example gets the label with the highest score.
+
+    ``scores`` has one row per example and one column per label in ``names`` order, as the bench
+    returns them: the softmax over the labels, so a row adds up to 1. Nothing is left out, because
+    the examples taught the model nothing: the share is that of every example as it is. A miss
+    names the score of the label named and of the expected one.
+    """
+    scores = np.asarray(scores, dtype=np.float64)
+    if scores.ndim != 2 or scores.shape[0] != len(expected):
+        raise ValueError(f"expected one row of scores per example ({len(expected)}), got shape {scores.shape}")
+    _check_names(expected, names)
+    if scores.shape[1] != len(names):
+        raise ValueError(f"expected {len(names)} scores per example, one per label, got {scores.shape[1]}")
+    if not np.isfinite(scores).all():
+        raise ValueError("the scores contain NaN or infinity")
+    outside = np.flatnonzero(((scores < -UNIT_TOLERANCE) | (scores > 1 + UNIT_TOLERANCE)).any(axis=1))
+    if outside.size:
+        raise ValueError(f"the scores of example {outside[0]} are not between 0 and 1: {scores[outside[0]].tolist()}")
+    sums = scores.sum(axis=1)
+    off = np.flatnonzero(np.abs(sums - 1) > UNIT_TOLERANCE)
+    if off.size:
+        raise ValueError(f"the scores of example {off[0]} add up to {sums[off[0]]:.6g}; "
+                         "the bench must return a softmax over the labels")
+    return _evaluation(scores, _codes(expected, names), names, pass_rate)
+
+
 def _check(
     vectors: np.ndarray, expected: Sequence[str], names: Sequence[str]
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -139,12 +175,7 @@ def _check(
     vectors = np.asarray(vectors, dtype=np.float64)
     if vectors.ndim != 2 or vectors.shape[0] != len(expected) or vectors.shape[1] == 0:
         raise ValueError(f"expected one vector per example ({len(expected)}), got shape {vectors.shape}")
-    if len(expected) == 0:
-        raise ValueError("no examples")
-    if len(set(names)) != len(names):
-        raise ValueError(f"label names repeat: {list(names)}")
-    if len(names) < 2:
-        raise ValueError("classification needs at least two labels")
+    _check_names(expected, names)
     if not np.isfinite(vectors).all():
         raise ValueError("the vectors contain NaN or infinity")
     lengths = np.linalg.norm(vectors, axis=1)
@@ -152,11 +183,25 @@ def _check(
     if off.size:
         raise ValueError(f"vector {off[0]} has length {lengths[off[0]]:.6g}; "
                          "the bench must return vectors of unit length")
+    return vectors, _codes(expected, names)
+
+
+def _check_names(expected: Sequence[str], names: Sequence[str]) -> None:
+    if len(expected) == 0:
+        raise ValueError("no examples")
+    if len(set(names)) != len(names):
+        raise ValueError(f"label names repeat: {list(names)}")
+    if len(names) < 2:
+        raise ValueError("classification needs at least two labels")
+
+
+def _codes(expected: Sequence[str], names: Sequence[str]) -> np.ndarray:
+    """Every example's label as its row number in ``names``."""
     position = {name: k for k, name in enumerate(names)}
     unknown = sorted({label for label in expected if label not in position})
     if unknown:
         raise ValueError(f"labels {unknown} are not among {list(names)}")
-    return vectors, np.array([position[label] for label in expected])
+    return np.array([position[label] for label in expected])
 
 
 def _label_sums(
