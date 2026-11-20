@@ -29,8 +29,9 @@ limits:
 # accept: Apache-2.0, MIT, BSD) or any (also models with terms of their own, such as Gemma).
 license: permissive
 
-# Where the site loads the model from: bundle (the build folder). The value hub, which
-# loads it from Hugging Face, is not supported yet.
+# Where the site loads the model from: bundle (the build folder carries the model, 25 to
+# 250 MB on your hosting) or hub (the files stay on Hugging Face at a fixed revision and
+# the visitor's browser downloads them from there; your site serves the engine and the runtime).
 host: bundle
 
 # Build folder for your site.

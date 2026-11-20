@@ -482,6 +482,64 @@ def test_the_stage_a_page_failed_at_is_in_words(built, examples, chrome, capsys,
     assert words in err
 
 
+def on_hub(folder: Path) -> None:
+    def change(manifest):
+        manifest["model"].update(host="hub", path=None)
+    edit(folder, bundle.MANIFEST, change)
+
+
+def test_a_folder_with_host_hub_says_the_check_needs_the_network_and_passes_as_any_other(built, examples, chrome, capsys):
+    on_hub(built)
+
+    code, out, err = run(built, examples, capsys)
+
+    assert code == exitcodes.DONE, err
+    folder = read(built)
+    assert (folder.host, len(folder.revision)) == ("hub", 40)
+    assert (f"  model     host: hub, the page downloads the model's files from Hugging Face ({folder.model} at "
+            f"revision {folder.revision}), so this check needs the network") in out
+    assert "PASSED" in out
+
+
+def test_a_folder_without_host_in_its_manifest_is_a_bundle_folder_and_says_nothing_of_the_network(built, examples, chrome, capsys):
+    edit(built, bundle.MANIFEST, lambda manifest: manifest["model"].pop("host", None))
+
+    code, out, _ = run(built, examples, capsys)
+
+    assert code == exitcodes.DONE and read(built).host == "bundle"
+    assert "Hugging Face" not in out and "network" not in out
+
+
+def test_a_hub_folder_whose_files_did_not_download_is_the_environment_not_the_folder(built, examples, chrome, capsys):
+    on_hub(built)
+    chrome.outcome = {"failure": {"stage": "load", "index": None, "code": "network",
+                                  "message": "A file of the model did not download: Failed to fetch"}, "events": []}
+
+    code, out, err = run(built, examples, capsys)
+
+    assert code == exitcodes.ENVIRONMENT
+    assert "FAILED: the page could not download the model from Hugging Face [network]" in err
+    assert "check the connection and run the check again" in err and "PASSED" not in out
+
+
+def test_a_hub_folder_whose_model_did_not_start_is_still_the_folder(built, examples, chrome, capsys):
+    # Only a download that a new try may fix is the environment: a 404 on Hugging Face is "load".
+    on_hub(built)
+    chrome.outcome = {"failure": {"stage": "load", "index": None, "code": "load", "message": "HTTP 404"}, "events": []}
+
+    code, _, err = run(built, examples, capsys)
+
+    assert code == exitcodes.NOT_PASSED and "the page could not load the model [load]" in err
+
+
+def test_a_network_failure_of_a_bundle_folder_stays_a_failure_of_the_folder(built, examples, chrome, capsys):
+    chrome.outcome = {"failure": {"stage": "load", "index": None, "code": "network", "message": "HTTP 503"}, "events": []}
+
+    code, _, err = run(built, examples, capsys)
+
+    assert code == exitcodes.NOT_PASSED and "the page could not load the model [network]" in err
+
+
 def test_a_browser_that_does_not_start_is_the_environment_not_the_folder(built, examples, monkeypatch, capsys):
     @contextmanager
     def no_chrome(*, headed: bool = False):

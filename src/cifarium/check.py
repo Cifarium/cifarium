@@ -69,6 +69,9 @@ class Folder:
     model: str
     recipe: str
     built_by: str
+    host: str
+    """``model.host`` of the manifest: ``hub`` when the page takes the model's files from Hugging Face."""
+    revision: str
     labels: tuple[config.Label, ...]
     pass_rate: float
     max_latency_ms: float | None
@@ -134,6 +137,8 @@ def read_folder(folder: Path) -> Folder:
         model=str(model.get("repo", "?")),
         recipe=str(manifest.get("recipe", "?")),
         built_by=str(manifest.get("cifarium", "?")),
+        host=str(model.get("host", bundle.BUNDLE)),
+        revision=str(model.get("revision", "?")),
         labels=labels,
         pass_rate=float(_number(report_path, report, "settings", "passRate")),
         max_latency_ms=_number(report_path, report, "settings", "limits", "maxLatencyMs", null=True),
@@ -360,7 +365,8 @@ def run(
 ) -> int:
     """Run the command and return the exit code (:mod:`exitcodes`): 0 when the folder passed every
     check; 1 when it ran and something failed; 2 when the folder, its report, the examples or the
-    command line are wrong; 3 when the environment failed (Chrome, the disk)."""
+    command line are wrong; 3 when the environment failed (Chrome, the disk, and for a folder with
+    ``host: hub`` a download from Hugging Face that a new try may fix: the runtime's ``network``)."""
     _tolerate_any_text()
     try:
         context = _prepare(folder, examples, hosting_name)
@@ -377,6 +383,8 @@ def run(
 
     _say("cifarium check")
     _say(f"  folder    {_shown(folder_info.path)}: {folder_info.model}, built by cifarium {folder_info.built_by}")
+    if folder_info.host == bundle.HUB:
+        _say(f"  model     {hosted_on_hub(folder_info)}")
     _say(f"  examples  {len(items.items)} in {items.path.name}, {len(items.labels)} labels"
          + (f" ({same_examples(folder_info.recipe)})" if from_settings else ""))
     limit = folder_info.max_latency_ms
@@ -399,10 +407,12 @@ def run(
 
     failure = outcome.get("failure")
     if failure is not None:
-        print(f"\nFAILED: {describe_failure(failure, items.items)}", file=sys.stderr)
+        offline = folder_info.host == bundle.HUB and failure.get("code") == "network"
+        print(f"\nFAILED: {describe_failure(failure, items.items, hub=offline)}", file=sys.stderr)
         for event in outcome["events"][-5:]:
             print(f"  {event}", file=sys.stderr)
-        return exitcodes.NOT_PASSED
+        # Hugging Face did not answer this machine: the environment, not the folder (ARCHITECTURE.md, section 9).
+        return exitcodes.ENVIRONMENT if offline else exitcodes.NOT_PASSED
     measures = measure(outcome["result"])
     labels = [answer["label"] for answer in outcome["result"]["answers"]]
     for line in describe_measures(measures):
@@ -452,8 +462,21 @@ def same_examples(recipe: str) -> str:
             "not how the model does on new texts")
 
 
-def describe_failure(failure: Mapping[str, Any], items: Sequence[example_files.Example]) -> str:
-    """The sentence for a page that did not get to the end."""
+def hosted_on_hub(folder: Folder) -> str:
+    """The line of the header for a folder with ``host: hub``: where the files come from, and that the
+    check needs the network for them."""
+    return (f"host: hub, the page downloads the model's files from Hugging Face ({folder.model} at revision "
+            f"{folder.revision}), so this check needs the network")
+
+
+def describe_failure(failure: Mapping[str, Any], items: Sequence[example_files.Example], *,
+                     hub: bool = False) -> str:
+    """The sentence for a page that did not get to the end. ``hub``: the page of a folder with
+    ``host: hub`` could not download a file, which says nothing about the folder."""
+    if hub:
+        return (f"the page could not download the model from Hugging Face [network]: {failure.get('message')}. "
+                "The folder has host: hub, and this machine did not get the files: check the connection "
+                "and run the check again.")
     stage = failure.get("stage")
     doing = {"import": "load cifarium.js as a module", "create": "read cifarium.json",
              "load": "load the model"}.get(stage)

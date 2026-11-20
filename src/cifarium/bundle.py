@@ -59,6 +59,16 @@ catalog: the runtime reads the length of a vector from the size of the centres f
 RECIPES = frozenset({"embed-centroid", "zero-shot"})
 """Recipes whose folder :func:`write` writes: both recipes of the catalog (``catalog.RECIPES``)."""
 
+BUNDLE, HUB = "bundle", "hub"
+HOSTS = (BUNDLE, HUB)
+"""Where the site takes the model's files from, as ``host`` of the settings and ``model.host`` of the
+manifest say: ``bundle`` — from ``models/`` of the folder; ``hub`` — from Hugging Face at the pinned
+revision, and the folder has no ``models/`` (ARCHITECTURE.md, section 7)."""
+
+HUB_ADDRESS = "https://huggingface.co/"
+"""Where a folder with ``host: hub`` takes the model's files from. The runtime holds the same address
+(``HUB`` in cifarium-worker.js); it is the one address outside the site the runtime ever asks."""
+
 TEMPLATES = "templates"
 """Folder of the example page, the hosting settings and the license file under ``web/``."""
 
@@ -92,6 +102,7 @@ def write(
     model_dir: Path | None = None,
     engine_sizes: Mapping[str, int] = vendor.ENGINE_BYTES,
     reports: Mapping[str, bytes] | None = None,
+    host: str = BUNDLE,
 ) -> Built:
     """Write the build of ``candidate`` into ``folder`` and return what is there now.
 
@@ -103,7 +114,11 @@ def write(
     be published (ARCHITECTURE.md, section 7). ``variants`` are the variants of the entry that the bench has
     checked. The engine and the model are copied from the cache (``engine_dir`` and ``model_dir``
     replace it); a file whose size is not the one the catalog or the pinned engine names is an
-    error, because the manifest promises these sizes to the runtime.
+    error, because the manifest promises these sizes to the runtime. With ``host="hub"`` the model
+    is not copied: the folder has no ``models/``, the manifest says ``model.host: "hub"``, and the
+    runtime takes the files from Hugging Face at the revision of the catalog (``model_dir`` is not
+    read). A folder that held ``models/`` of an earlier build loses them, like any file the new
+    manifest does not name.
 
     ``reports`` are the files of the report by name (:data:`REPORT_FILES`), made by :mod:`report`
     before the folder is written; they are written with the other files, before the manifest. A
@@ -115,6 +130,8 @@ def write(
     not name are deleted at the end; see :func:`stale`.
     """
     reports = _checked_reports(reports)
+    if host not in HOSTS:
+        raise ValueError(f"host must be one of {HOSTS}, got {host!r}")
     entry, recipe = candidate.entry, candidate.recipe
     labels = list(labels)
     names = [label.name for label in labels]
@@ -130,10 +147,11 @@ def write(
     if folder.exists() and not folder.is_dir():
         raise BundleError(f"{folder} is a file, not a folder: change `output` in the settings")
     engine_dir = vendor.ensure_engine() if engine_dir is None else engine_dir
-    model_dir = hub.model_dir(entry.repo) if model_dir is None else model_dir
+    if host == BUNDLE and model_dir is None:
+        model_dir = hub.model_dir(entry.repo)
 
     manifest = manifest_of(candidate, labels, 0 if rows is None else rows.nbytes, variants=variants,
-                           engine_sizes=engine_sizes)
+                           engine_sizes=engine_sizes, host=host)
     before = _previous(folder / MANIFEST)
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -141,10 +159,12 @@ def write(
             ref = manifest["engine"][role]
             _copy(engine_dir / name, folder / ref["path"], ref["bytes"])
 
-        model_path = manifest["model"]["path"]
-        for variant in variants:
-            for name, size in entry.files(variant).items():
-                _copy(model_dir / name, folder / model_path / entry.repo / name, size)
+        if host == BUNDLE:
+            assert model_dir is not None
+            model_path = manifest["model"]["path"]
+            for variant in variants:
+                for name, size in entry.files(variant).items():
+                    _copy(model_dir / name, folder / model_path / entry.repo / name, size)
 
         if rows is not None:
             _write_bytes(folder / CENTRES_FILE, rows.tobytes())
@@ -205,6 +225,7 @@ def manifest_of(
     *,
     variants: Sequence[str] = (FIRST_LOAD_VARIANT,),
     engine_sizes: Mapping[str, int] = vendor.ENGINE_BYTES,
+    host: str = BUNDLE,
 ) -> dict[str, Any]:
     """The manifest of a build of ``candidate``. Touches no file: the build and the selection both
     ask it, so that what the selection weighs is what the build writes.
@@ -212,7 +233,14 @@ def manifest_of(
     ``centres_bytes`` is the size of the centres file: four bytes for each number of each label.
     Only the recipe ``embed-centroid`` has such a file. ``zero-shot`` has no file of data: its
     hypotheses are in the ``params`` of the manifest, so its first load is the engine and the model.
+
+    ``host`` goes into ``model.host``. ``bundle``: ``model.path`` is the folder of the model in the
+    build, ``models/<revision>/``. ``hub``: ``model.path`` is null, and the runtime takes the files
+    from Hugging Face at ``model.revision``. Everything else, the sizes of the files included, is the
+    same for both: a first visit downloads the same bytes, only from another place.
     """
+    if host not in HOSTS:
+        raise ValueError(f"host must be one of {HOSTS}, got {host!r}")
     entry, recipe = candidate.entry, candidate.recipe
     engine_path = f"vendor/transformers-{vendor.TRANSFORMERS_VERSION}/"
     engine: dict[str, Any] = {
@@ -228,8 +256,8 @@ def manifest_of(
         "task": recipe.task,
         "recipe": recipe.kind,
         "labels": [{"name": label.name, "description": label.description} for label in labels],
-        "model": {"repo": entry.repo, "revision": entry.revision, "license": entry.license,
-                  "path": f"models/{entry.revision}/"},
+        "model": {"repo": entry.repo, "revision": entry.revision, "license": entry.license, "host": host,
+                  "path": f"models/{entry.revision}/" if host == BUNDLE else None},
         "variants": {variant: variant_record(entry, variant) for variant in variants},
         "params": params_of(candidate, labels),
         "engine": engine,
@@ -281,24 +309,49 @@ def first_load(manifest: Mapping[str, Any], variant: str) -> tuple[int, set[str]
     the files of the other variants. Uncompressed sizes, as the manifest holds them.
 
     The selection (through :func:`manifest_of`), ``limits.max_size_mb``, :attr:`Built.first_load_bytes`
-    and the runtime's ``info().bytes`` are this number; ARCHITECTURE.md, section 7.
+    and the runtime's ``info().bytes`` are this number; ARCHITECTURE.md, section 7. It does not depend
+    on ``model.host``: with ``hub`` the model's files come from Hugging Face, and their paths here are
+    their full addresses there (:func:`model_base`), but the visitor downloads the same bytes.
     """
     refs = [manifest["engine"][role] for role in ENGINE_FILES] + list(manifest["data"].values())
-    folder = manifest["model"]["path"] + manifest["model"]["repo"] + "/"
+    folder = model_base(manifest)
     files = {ref["path"]: ref["bytes"] for ref in refs}
     files.update({folder + name: size for name, size in manifest["variants"][variant]["files"].items()})
     return sum(files.values()), set(files)
 
 
+def host_of(manifest: Mapping[str, Any]) -> str:
+    """``model.host`` of a manifest; ``bundle`` for a manifest written before the key existed."""
+    return manifest["model"].get("host", BUNDLE)
+
+
+def model_base(manifest: Mapping[str, Any]) -> str:
+    """Where the model's files are, as the prefix of a file's name: ``models/<revision>/<repo>/``,
+    relative to the manifest, for ``bundle``; the address on Hugging Face,
+    ``https://huggingface.co/<repo>/resolve/<revision>/``, for ``hub``. The runtime makes the same
+    address (``modelFolder`` in cifarium-worker.js), and the library stores the files under it."""
+    model = manifest["model"]
+    if host_of(manifest) == HUB:
+        return hub_address(model["repo"], model["revision"])
+    return model["path"] + model["repo"] + "/"
+
+
+def hub_address(repo: str, revision: str, file: str = "") -> str:
+    """The address of a file of ``repo`` at ``revision`` on Hugging Face."""
+    return f"{HUB_ADDRESS}{repo}/resolve/{revision}/{file}"
+
+
 def owned(manifest: Mapping[str, Any]) -> set[str]:
-    """Every file a build with this manifest writes: the ones it names and the fixed ones."""
+    """Every file a build with this manifest writes: the ones it names and the fixed ones. The model's
+    files only with ``model.host: bundle``: with ``hub`` they are not in the folder."""
     files = {MANIFEST, PAGE, LICENSES, *REPORT_FILES, *RUNTIME_FILES,
              *(f"hosting/{name}" for name in HOSTING_FILES)}
     files.update(manifest["engine"][role]["path"] for role in ENGINE_FILES)
     files.update(ref["path"] for ref in manifest["data"].values())
-    folder = manifest["model"]["path"] + manifest["model"]["repo"] + "/"
-    for variant in manifest["variants"].values():
-        files.update(folder + name for name in variant["files"])
+    if host_of(manifest) == BUNDLE:
+        folder = model_base(manifest)
+        for variant in manifest["variants"].values():
+            files.update(folder + name for name in variant["files"])
     return files
 
 
@@ -322,7 +375,17 @@ def licenses_text(manifest: Mapping[str, Any], entry: catalog.Entry, engine_dir:
     if entry.notice:
         lines = "\n".join(f"    {line}".rstrip() for line in entry.notice.splitlines())
         notice = f"\n\n  The notice that goes with the model, from its terms or its card:\n{lines}"
+    if host_of(manifest) == HUB:
+        served = ("The page runs the model in the visitor's browser and sends nothing anywhere.\n"
+                  "The model's files are not in this folder: the page downloads them from Hugging Face.")
+        place = "not in this folder: the page downloads it from Hugging Face"
+    else:
+        served = ("Everything in it is served from your own site: the page\n"
+                  "runs the model in the visitor's browser and sends nothing anywhere.")
+        place = model_base(manifest)
     text = template.substitute(
+        served=served,
+        model_place=place,
         cifarium=manifest["cifarium"],
         transformers=manifest["engine"]["transformers"],
         onnxruntime_web=manifest["engine"]["onnxruntimeWeb"],
@@ -331,7 +394,6 @@ def licenses_text(manifest: Mapping[str, Any], entry: catalog.Entry, engine_dir:
         revision=entry.revision,
         license=entry.license,
         license_source=entry.license_source,
-        model_path=manifest["model"]["path"],
         model_notice=notice,
         transformers_license=_license_of(engine_dir, vendor.TRANSFORMERS_LICENSE_FILE),
         onnxruntime_license=_license_of(engine_dir, vendor.ORT_LICENSE_FILE),

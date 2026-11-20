@@ -176,6 +176,7 @@ def test_the_keys_of_the_manifest_are_the_contract(sources, tmp_path):
         "format",
         "labels[].description",
         "labels[].name",
+        "model.host",
         "model.license",
         "model.path",
         "model.repo",
@@ -210,6 +211,7 @@ def test_the_keys_of_the_manifest_of_zero_shot_are_the_contract(sources, tmp_pat
         "format",
         "labels[].description",
         "labels[].name",
+        "model.host",
         "model.license",
         "model.path",
         "model.repo",
@@ -224,6 +226,17 @@ def test_the_keys_of_the_manifest_of_zero_shot_are_the_contract(sources, tmp_pat
         "variants.cpu.graph",
     ]
     assert manifest["data"] == {} and len(manifest["params"]["hypotheses"]) == len(manifest["labels"])
+
+
+def test_a_manifest_with_host_hub_has_the_same_keys_and_a_null_path(sources, tmp_path):
+    # `model.host` says where the model's files are; with "hub" there is no folder of them, and the key
+    # `model.path` stays with null, as every key of the format does when it has no value.
+    bundled = sources.write(tmp_path / "one").manifest
+    on_hub = sources.write(tmp_path / "two", host="hub").manifest
+
+    assert key_paths(on_hub) == key_paths(bundled)
+    assert (bundled["model"]["host"], on_hub["model"]["host"], on_hub["model"]["path"]) == ("bundle", "hub", None)
+    assert bundle.HOSTS == config.HOSTS
 
 
 def test_every_key_of_the_manifest_is_written_in_camel_case(sources, tmp_path):
@@ -339,9 +352,14 @@ def test_the_runtime_uses_only_codes_and_reasons_it_lists():
 
 
 def test_the_runtime_sends_nothing_anywhere_by_its_source():
-    # The browser half is in tests/test_page_e2e.py; this is the cheap part: no address that is
-    # not the page's own, no way to send data out except fetch of a file of the folder.
-    for name in ("cifarium.js", "cifarium-worker.js"):
+    # The browser half is in tests/test_page_e2e.py and tests/test_hub_e2e.py; this is the cheap part:
+    # no address but the page's own and, in the thread, the one of Hugging Face for a build with
+    # `host: hub`; no way to send data out except fetch of a file.
+    for name, allowed in (("cifarium.js", set()), ("cifarium-worker.js", {bundle.HUB_ADDRESS})):
+        # The addresses in strings first: the line-comment pattern below would cut a string at its `//`.
+        literals = set(re.findall(r"""['"`](https?://[^'"`]*)""",
+                                  re.sub(r"/\*.*?\*/", "", source(name), flags=re.DOTALL)))
+        assert literals == allowed, name
         code = re.sub(r"/\*.*?\*/|//[^\n]*", "", source(name), flags=re.DOTALL)
         assert not re.search(r"https?://", code), name
         for forbidden in ("sendBeacon", "XMLHttpRequest", "WebSocket", "EventSource", "importScripts"):

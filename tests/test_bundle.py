@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -123,7 +124,7 @@ def test_the_manifest_is_the_one_the_runtime_reads(sources, out):
         "task": "classify",
         "recipe": "embed-centroid",
         "labels": [{"name": name, "description": None} for name in LABELS],
-        "model": {"repo": "org/tiny", "revision": REVISION, "license": "apache-2.0",
+        "model": {"repo": "org/tiny", "revision": REVISION, "license": "apache-2.0", "host": "bundle",
                   "path": f"models/{REVISION}/"},
         "variants": {"cpu": {"device": "wasm", "dtype": "q8", "graph": "model", "externalData": 0,
                              "files": {**MODEL_FILES, **GRAPH}}},
@@ -526,6 +527,98 @@ def test_a_failed_rebuild_leaves_the_old_manifest_and_files_in_place(sources, ou
 
     assert (out / "cifarium.json").read_bytes() == manifest
     assert (out / f"models/{REVISION}/org/tiny/config.json").is_file()
+
+
+# --- host: hub -------------------------------------------------------------------------------------------
+
+
+def test_a_folder_with_host_hub_has_no_models_and_its_manifest_names_the_model_on_hugging_face(sources, out):
+    # The model's files are not read at all: the cache of the model may be empty.
+    shutil.rmtree(sources.model)
+    built = sources.write(out, host="hub")
+
+    assert not (out / "models").exists()
+    assert not any(name.startswith("models/") for name in tree(out))
+    assert set(built.files) == tree(out)
+    manifest = json.loads((out / "cifarium.json").read_text(encoding="utf-8"))
+    assert manifest == built.manifest
+    assert manifest["model"] == {"repo": "org/tiny", "revision": REVISION, "license": "apache-2.0",
+                                 "host": "hub", "path": None}
+    # Everything but `model.path` is the manifest of the same build with the model in the folder.
+    bundled = bundle.manifest_of(candidate(), [Label(name) for name in LABELS], 36, engine_sizes=ENGINE_SIZES)
+    assert {**manifest, "model": None} == {**bundled, "model": None}
+    assert bundled["model"] == {**manifest["model"], "host": "bundle", "path": f"models/{REVISION}/"}
+
+
+def test_the_first_visit_of_a_hub_folder_weighs_the_same_and_names_the_files_on_hugging_face(sources, out):
+    built = sources.write(out, host="hub")
+
+    total, files = bundle.first_load(built.manifest, "cpu")
+    assert total == built.first_load_bytes == 11 + 7 + 13 + 9 + 5 + 36
+    base = f"https://huggingface.co/org/tiny/resolve/{REVISION}/"
+    assert bundle.model_base(built.manifest) == base == bundle.hub_address("org/tiny", REVISION)
+    assert {name for name in files if name.startswith("https://")} == {base + name for name in (*MODEL_FILES, *GRAPH)}
+    # The folder owns none of them, so no rebuild ever tries to delete an address.
+    assert not any(name.startswith(("models/", "https:")) for name in bundle.owned(built.manifest))
+    # The size on disk is the folder without the model: what an upload sends.
+    assert built.size_bytes == sum((out / name).stat().st_size for name in tree(out))
+
+
+def test_a_hub_build_over_a_bundle_build_removes_the_model_and_keeps_the_developers_files(sources, out):
+    sources.write(out)
+    mine = out / f"models/{REVISION}/org/tiny/extra.txt"
+    mine.write_text("mine", encoding="utf-8")
+
+    built = sources.write(out, host="hub")
+
+    assert set(built.removed) == {f"models/{REVISION}/org/tiny/{name}" for name in (*MODEL_FILES, *GRAPH)}
+    assert mine.read_text(encoding="utf-8") == "mine"
+    assert not (out / f"models/{REVISION}/org/tiny/config.json").exists()
+
+    # And back: the model comes into the folder again, and nothing of the hub build is left to remove.
+    again = sources.write(out)
+    assert again.removed == ()
+    assert (out / f"models/{REVISION}/org/tiny/onnx/model_quantized.onnx").is_file()
+
+
+def test_a_manifest_without_host_is_a_bundle_manifest_for_a_rebuild(sources, out):
+    # Folders built before `model.host` existed: their model is still deleted by a hub build.
+    sources.write(out)
+    manifest = json.loads((out / "cifarium.json").read_text(encoding="utf-8"))
+    del manifest["model"]["host"]
+    (out / "cifarium.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    built = sources.write(out, host="hub")
+
+    assert len(built.removed) == len(MODEL_FILES) + len(GRAPH)
+
+
+def test_the_license_file_of_a_hub_folder_says_the_model_is_not_in_it(sources, out):
+    sources.write(out, host="hub")
+
+    text = (out / "LICENSES.txt").read_text(encoding="utf-8")
+    assert "The model's files are not in this folder: the page downloads them from Hugging Face." in text
+    assert "The model: not in this folder: the page downloads it from Hugging Face\n" in text
+    assert f"https://huggingface.co/org/tiny at revision {REVISION}" in text
+    assert "models/" not in text and "served from your own site" not in text
+
+
+def test_a_hub_folder_is_the_same_bytes_in_another_folder(sources, tmp_path):
+    one = sources.write(tmp_path / "one", host="hub")
+    two = sources.write(tmp_path / "two", host="hub")
+
+    assert one.files == two.files
+    for name in one.files:
+        assert (tmp_path / "one" / name).read_bytes() == (tmp_path / "two" / name).read_bytes(), name
+
+
+def test_an_unknown_host_is_a_mistake_of_the_caller(sources, out):
+    with pytest.raises(ValueError, match="host must be one of"):
+        sources.write(out, host="cdn")
+    with pytest.raises(ValueError, match="host must be one of"):
+        bundle.manifest_of(candidate(), [Label("a"), Label("b")], 0, host="cdn")
+    assert not out.exists()
+    assert bundle.HOSTS == ("bundle", "hub") and bundle.HUB_ADDRESS == "https://huggingface.co/"
 
 
 # --- the report files ----------------------------------------------------------------------------------

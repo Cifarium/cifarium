@@ -101,3 +101,19 @@ The first contracts. Nothing was published before, so nothing is a break.
   of `score` is the recipe's: from -1 to 1 for `embed-centroid`, from 0 to 1 with all the scores
   adding up to 1 for `zero-shot` (`info().recipe` says which; ARCHITECTURE.md, section 8). `check`
   judges such a folder with the same four checks.
+- `host: hub` works: `build` writes the folder without `models/` and ends with code 0, and the page
+  downloads the model's files from Hugging Face at the revision the catalog pins
+  (`https://huggingface.co/<repo>/resolve/<revision>/…`, which hands the large files on to its CDN
+  under `*.hf.co`). The manifest gets `model.host`: `"bundle"` or `"hub"`; with `"hub"`,
+  `model.path` is `null`. A manifest without `model.host` is read as `"bundle"`, and the runtime
+  refuses a value it does not know with `unsupported`. Everything else in the manifest, the sizes of
+  the files and the weight of a first visit included, is the same for both hosts. For a model's file
+  of such a build, `file` of a progress event is the file's full address on Hugging Face. The
+  isolation headers of `hosting/` need no change: Hugging Face answers with CORS, which
+  `Cross-Origin-Embedder-Policy: require-corp` lets through. `check` on such a folder needs the
+  network and says so; a download from Hugging Face that a new try may fix ends it with code 3, not 1.
+- The runtime clears the files of earlier builds of its folder out of the visitor's browser store
+  (Cache API, `transformers-cache`) when it loads: a rebuild with another revision, another engine
+  or another host no longer leaves the old files there. It keeps the list of what its folder stored
+  under the address of the manifest with `?cifarium-cached-files`, and touches nothing else in the
+  store.

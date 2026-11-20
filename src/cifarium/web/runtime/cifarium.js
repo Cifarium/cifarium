@@ -9,7 +9,8 @@
  * The model computes in a background thread (cifarium-worker.js, next to this file), on the
  * graphics card when the build has a variant for it and the browser offers an adapter, and on
  * the processor otherwise or when the card fails. Nothing is sent anywhere: the runtime only
- * reads the files of its own folder. ARCHITECTURE.md, section 8, describes every call, and
+ * reads the files of its own folder and, for a build with `host: hub`, the model's files on
+ * Hugging Face at the revision of the manifest. ARCHITECTURE.md, section 8, describes every call, and
  * section 14 says which parts of it are a promise to the developer.
  */
 
@@ -42,6 +43,8 @@ export const FALLBACK_REASONS = Object.freeze([
 export const PROGRESS_PHASES = Object.freeze(['download', 'prepare']);
 
 const TASKS = { classify: ['embed-centroid', 'zero-shot'] };
+/** Where the model's files are: `model.host` of the manifest; a manifest without it is "bundle". */
+const HOSTS = ['bundle', 'hub'];
 const POOLINGS = ['mean', 'cls', 'none'];
 const DEVICES = ['auto', 'wasm', 'webgpu'];
 /** Which `device` each variant of the manifest must have. */
@@ -77,8 +80,11 @@ const VARIANT_DEVICES = { cpu: 'wasm', gpu: 'webgpu' };
  * @property {string} task
  * @property {string} recipe
  * @property {Label[]} labels Only for the task "classify", in the order of the settings.
- * @property {{repo: string, revision: string, license: string, path: string}} model `path` is
- *   the folder the library reads models from; the files lie in `<path><repo>/`.
+ * @property {{repo: string, revision: string, license: string, host?: "bundle"|"hub",
+ *   path: string|null}} model Where the model's files are. `host` "bundle" (also when there is no
+ *   `host`, as in manifests written before it): in the build folder, and `path` is the folder the
+ *   library reads models from, the files lie in `<path><repo>/`. `host` "hub": on Hugging Face at
+ *   `revision`, `path` is null, and the page downloads them from https://huggingface.co/.
  * @property {{cpu?: Variant, gpu?: Variant}} variants
  * @property {{pooling: "mean"|"cls"|"none", prefix: string}|{hypotheses: string[]}} params What
  *   the recipe needs to call the model. "embed-centroid": `pooling` and `prefix`. "zero-shot":
@@ -96,8 +102,9 @@ const VARIANT_DEVICES = { cpu: 'wasm', gpu: 'webgpu' };
  *   every byte of this load is in and the session and the trial run are left: one event with
  *   `percent` 100 opens it, and it is the last of a load. If the graphics card fails and the
  *   processor's files are added, "download" may come again once.
- * @property {string} file Path of the file relative to the manifest. In "prepare" it is the
- *   last file that arrived.
+ * @property {string} file Address of the file relative to the manifest: a path in the build
+ *   folder, or the full address on Hugging Face for a model's file of a build with `host` "hub".
+ *   In "prepare" it is the last file that arrived.
  * @property {number} loaded Bytes of this file read so far.
  * @property {number} total Bytes of this file.
  * @property {number} allLoaded Bytes of every file of this load read so far.
@@ -545,6 +552,13 @@ function checkManifest(manifest, url) {
       `${where} uses recipe ${JSON.stringify(manifest.recipe)} for ${manifest.task}; this ` +
       `runtime (${VERSION}) knows ${recipes.join(', ')}.`);
   }
+  const declared = isObject(manifest.model) ? manifest.model.host : undefined;
+  const host = declared === undefined ? HOSTS[0] : declared;
+  if (!HOSTS.includes(host)) {
+    throw new CifariumError('unsupported',
+      `${where} takes the model from host ${JSON.stringify(host)}; this runtime (${VERSION}) knows ` +
+      `${HOSTS.join(', ')}. Use the cifarium.js and cifarium-worker.js from the same build.`);
+  }
 
   /** @type {string[]} */
   const problems = [];
@@ -560,8 +574,10 @@ function checkManifest(manifest, url) {
     && new Set(labels.map((label) => label?.name)).size === labels.length,
   'labels: at least two different names, each with a description or null');
   const model = manifest.model;
-  need(isObject(model) && isText(model.repo) && isText(model.revision) && isText(model.path)
-    && typeof model.license === 'string', 'model: repo, revision, license and path');
+  // A model on Hugging Face has no folder on the site; its revision is what pins the files.
+  need(isObject(model) && isText(model.repo) && isText(model.revision) && typeof model.license === 'string'
+    && (host === 'hub' || isText(model.path)),
+  host === 'hub' ? 'model: repo, revision and license' : 'model: repo, revision, license and path');
   const params = manifest.params;
   const data = manifest.data;
   if (manifest.recipe === 'zero-shot') {

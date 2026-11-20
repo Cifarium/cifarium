@@ -28,6 +28,18 @@ const PIPELINES = { 'embed-centroid': 'feature-extraction', 'zero-shot': 'zero-s
 /** Short text for the trial run that load() makes on the chosen device. */
 const TRIAL_TEXT = 'cifarium';
 
+/**
+ * Where a build with `model.host` "hub" takes the model's files from: the one address outside the
+ * site that the runtime ever asks, and only for such a build (bundle.HUB_ADDRESS in Python).
+ */
+const HUB = 'https://huggingface.co/';
+
+/**
+ * The query that turns the manifest's address into the key of this folder's list in the browser's
+ * store: which files its last load put there (see `forgetEarlierFiles`).
+ */
+const LIST_QUERY = '?cifarium-cached-files';
+
 class Failure extends Error {
   /**
    * @param {string} code One of ERROR_CODES in cifarium.js.
@@ -277,7 +289,12 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
   // The files of the recipe: the centres for "embed-centroid", none for "zero-shot".
   const dataFiles = Object.values(data);
   const tally = new Tally(id, retry?.carry);
-  const modelFolder = `${manifest.model.path}${manifest.model.repo}/`;
+  const onHub = manifest.model.host === 'hub';
+  // What goes in front of a model's file: a path relative to the manifest, or the file's address on
+  // Hugging Face, which is also the key the library stores it under.
+  const modelFolder = onHub
+    ? `${HUB}${manifest.model.repo}/resolve/${encodeURIComponent(manifest.model.revision)}/`
+    : `${manifest.model.path}${manifest.model.repo}/`;
   // Before anything is downloaded: a sentence the library would change is a failed load, not a
   // build that answers about a sentence nobody wrote.
   const sentences = zeroShot ? passable(/** @type {{hypotheses: string[]}} */ (manifest.params).hypotheses) : [];
@@ -306,21 +323,34 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
   await importModule(address(engine.loader.path), 'the ONNX Runtime loader');
   tally.finish(engine.loader.path);
   const { env, pipeline } = library;
+  // Before anything big is downloaded, so that the space of an earlier build is free first.
+  await forgetEarlierFiles(env.cacheKey, manifestUrl, storable(manifest, manifestUrl, modelFolder));
 
   const { labels, centres, dims } = zeroShot
     ? { labels: manifest.labels.map((label) => label.name), centres: new Float32Array(0), dims: 0 }
     : await readCentres(manifest, address, tally);
 
-  // Every file comes from this build: nothing from Hugging Face or a CDN. The models' folder
-  // must be a path, not a full address: the library checks that a local file exists (it decides
-  // so whether to load the tokenizer) only for paths, and skips addresses that start with http.
-  const models = new URL(manifest.model.path, manifestUrl);
-  if (models.origin !== self.location.origin) {
-    throw new Failure('load', `The model lies at ${models.origin}, cifarium-worker.js at ${self.location.origin}; they must be on the same site.`);
+  if (onHub) {
+    // The model's files come from Hugging Face, everything else from this build. The revision goes
+    // into the template of the path itself, not into the `revision` option: Transformers.js 4.3.2
+    // drops that option where it lists the files and asks for their sizes, and would ask for them
+    // at `main`, whatever the repository holds there today (ARCHITECTURE.md, section 1.6).
+    env.allowLocalModels = false;
+    env.allowRemoteModels = true;
+    env.remoteHost = HUB;
+    env.remotePathTemplate = `{model}/resolve/${encodeURIComponent(manifest.model.revision)}/`;
+  } else {
+    // Every file comes from this build: nothing from Hugging Face or a CDN. The models' folder
+    // must be a path, not a full address: the library checks that a local file exists (it decides
+    // so whether to load the tokenizer) only for paths, and skips addresses that start with http.
+    const models = new URL(/** @type {string} */ (manifest.model.path), manifestUrl);
+    if (models.origin !== self.location.origin) {
+      throw new Failure('load', `The model lies at ${models.origin}, cifarium-worker.js at ${self.location.origin}; they must be on the same site.`);
+    }
+    env.allowLocalModels = true;
+    env.allowRemoteModels = false;
+    env.localModelPath = models.pathname;
   }
-  env.allowLocalModels = true;
-  env.allowRemoteModels = false;
-  env.localModelPath = models.pathname;
   // The runtime downloads the executor itself, to report its progress (the library does not)
   // and to keep it in the same store. With wasmBinary set and no "wasm" in wasmPaths, the
   // library leaves the executor alone and ONNX Runtime takes the buffer.
@@ -553,6 +583,64 @@ async function readExecutor(href, file, tally, cacheName) {
     console.warn(`cifarium: could not store ${file} in the browser:`, error);
   }
   return buffer;
+}
+
+/**
+ * The address of every file of this manifest that the library or the runtime may keep in the
+ * browser's store: the engine and the model's files of every variant, by the address the store
+ * keys them with.
+ * @param {Manifest} manifest
+ * @param {string} manifestUrl
+ * @param {string} modelFolder What goes in front of a model's file (see `load`).
+ * @returns {string[]}
+ */
+function storable(manifest, manifestUrl, modelFolder) {
+  const { engine, variants } = manifest;
+  const files = [engine.library.path, engine.loader.path, engine.executor.path];
+  for (const variant of [variants.cpu, variants.gpu]) {
+    if (variant) {
+      files.push(...Object.keys(variant.files).map((file) => modelFolder + file));
+    }
+  }
+  return [...new Set(files.map((file) => new URL(file, manifestUrl).href))];
+}
+
+/**
+ * Clears the files of this folder's earlier builds out of the browser's store. The library keeps
+ * every model file it downloads there, and the runtime the executor, each under its address; a
+ * rebuild changes the addresses (another revision, another version of the engine, `host` "hub"
+ * instead of "bundle"), and without this every rebuild would leave each visitor tens of megabytes
+ * more. Which files are this folder's is not guessed from their addresses: the store holds, under
+ * the manifest's address with LIST_QUERY, the list of files the last load of this folder could
+ * have put there, and what that list has and this manifest does not is deleted. Nothing else in
+ * the store is touched: other folders of the site, a page of the site that uses Transformers.js
+ * itself. A failure here is written to the console and never fails the load.
+ * @param {string} cacheName The library's store (`env.cacheKey`).
+ * @param {string} manifestUrl
+ * @param {string[]} wanted What `storable` gives for this manifest.
+ */
+async function forgetEarlierFiles(cacheName, manifestUrl, wanted) {
+  if (typeof caches === 'undefined') {
+    return; // Cache API exists only in secure contexts: HTTPS and localhost.
+  }
+  try {
+    const store = await caches.open(cacheName);
+    const key = new URL(manifestUrl);
+    key.search = LIST_QUERY;
+    key.hash = '';
+    const stored = await store.match(key.href);
+    const before = stored ? await stored.json().catch(() => null) : null;
+    const keep = new Set(wanted);
+    const earlier = Array.isArray(before?.files)
+      ? before.files.filter((/** @type {unknown} */ file) => typeof file === 'string' && !keep.has(file))
+      : [];
+    await Promise.all(earlier.map((/** @type {string} */ file) => store.delete(file)));
+    await store.put(key.href, new Response(JSON.stringify({ files: wanted }), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+  } catch (error) {
+    console.warn('cifarium: could not clear the files of earlier builds from the browser:', error);
+  }
 }
 
 /**

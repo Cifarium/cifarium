@@ -258,6 +258,7 @@ class Written:
     centres: np.ndarray | None
     """None for the recipe zero-shot, whose folder has no centres."""
     reports: dict[str, bytes]
+    host: str = "bundle"
 
     @property
     def names(self) -> list[str]:
@@ -278,7 +279,7 @@ def chrome(monkeypatch):
 
     def fake_write(folder, candidate, labels, centres, **kwargs):
         written.append(Written(Path(folder), candidate, list(labels), None if centres is None else np.array(centres),
-                               dict(kwargs.get("reports") or {})))
+                               dict(kwargs.get("reports") or {}), kwargs.get("host", "bundle")))
         return bundle.Built(Path(folder), {}, ("cifarium.json", "index.html"), fake.removed,
                             first_load_bytes=51_200_000, size_bytes=52_000_000)
 
@@ -381,13 +382,37 @@ def test_a_folder_that_cannot_be_written_ends_with_its_message_and_code_3(tmp_pa
     assert "Traceback" not in err and "Wrote " not in out
 
 
-def test_host_hub_is_refused_before_the_bench_starts_with_code_2(tmp_path, chrome, capsys):
+def test_host_hub_chooses_as_bundle_does_and_hands_the_host_to_the_folder_with_code_0(tmp_path, chrome, capsys):
     code = build.run(write_task(tmp_path, "host: hub\n"))
 
     out, err = capsys.readouterr()
-    assert code == exitcodes.BAD_INPUT == 2
-    assert "host: hub is not supported yet" in err and "host: bundle" in err
-    assert out == "" and chrome.jobs == [] and chrome.downloads == [] and chrome.written == []
+    assert code == exitcodes.DONE, err
+    [written] = chrome.written
+    assert (written.host, written.candidate.entry.id) == ("hub", "all-minilm-l6-v2")
+    # The bench runs the model from the cache whatever the host: the choice does not depend on it,
+    # and neither does the weight of a first visit, which the report counts from the same manifest.
+    assert chrome.downloads == ["Xenova/all-MiniLM-L6-v2"]
+    document = json.loads(written.reports[bundle.REPORT_JSON])
+    assert document["settings"]["host"] == "hub" and document["outcome"] == "built"
+    bundled = bundle.manifest_of(written.candidate, written.labels, written.centres.nbytes)
+    assert document["chosen"]["firstLoad"]["bytes"] == bundle.first_load(bundled, "cpu")[0]
+
+
+def test_the_lines_of_a_folder_with_host_hub_say_where_the_model_is_and_what_comes_from_there(tmp_path):
+    candidate = next(c for c in catalog.candidates("classify") if c.entry.id == "all-minilm-l6-v2")
+    manifest = bundle.manifest_of(candidate, [Label("a"), Label("b")], 4 * 2 * 384, host="hub")
+    total = bundle.first_load(manifest, "cpu")[0]
+    built = bundle.Built(tmp_path / "out", manifest, ("cifarium.json",), (), total, 27_600_000)
+
+    lines = build.describe_built(built)
+
+    model = sum(manifest["variants"]["cpu"]["files"].values())
+    assert lines[0].endswith(f"a first visit downloads {total / 1e6:.1f} MB, {model / 1e6:.1f} MB of it from Hugging Face")
+    assert lines[1] == ("  host: hub: the model's files stay on Hugging Face (Xenova/all-MiniLM-L6-v2 at revision "
+                        f"{candidate.entry.revision}); a page loads the model only while huggingface.co answers")
+    plain = build.describe_built(bundle.Built(tmp_path / "out", bundle.manifest_of(candidate, [Label("a"), Label("b")], 0),
+                                              ("cifarium.json",), (), total, 51_000_000))
+    assert "Hugging Face" not in "\n".join(plain)
 
 
 def test_the_folder_is_shown_as_the_user_can_type_it(tmp_path, monkeypatch):

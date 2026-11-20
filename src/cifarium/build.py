@@ -335,11 +335,6 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
         print(f"{error}\nFAILED: the model catalog that came with cifarium cannot be read; "
               "install cifarium again.", file=sys.stderr)
         return exitcodes.ENVIRONMENT
-    if settings.host != "bundle":
-        # Before the bench: a long run must not end in a folder the settings did not ask for.
-        print(f"{settings.path}: host: {settings.host} is not supported yet: the folder always carries "
-              "the model. Use `host: bundle` or leave the key out.", file=sys.stderr)
-        return exitcodes.BAD_INPUT
 
     texts = [item.input for item in items.items]
     limit = settings.limits.max_latency_ms
@@ -405,11 +400,12 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
     centres = centres_of(candidate, result.vectors, items)
     # The manifest the folder will get, from the same function that writes it: the report names the
     # weight of the first load by its parts, and they are the folder's.
-    manifest = bundle.manifest_of(candidate, items.labels, 0 if centres is None else centres.nbytes)
+    manifest = bundle.manifest_of(candidate, items.labels, 0 if centres is None else centres.nbytes,
+                                  host=settings.host)
     document = reporting.of_build(settings, items, result, device=device, single=single, manifest=manifest)
     try:
         built = bundle.write(settings.output, candidate, items.labels, centres,
-                             reports=reporting.files(document))
+                             reports=reporting.files(document), host=settings.host)
     except bundle.BundleError as error:
         print(f"\nFAILED: {error}", file=sys.stderr)
         return exitcodes.ENVIRONMENT
@@ -434,10 +430,17 @@ def centres_of(candidate: catalog.Candidate, vectors: np.ndarray, items: example
 def describe_built(built: bundle.Built) -> list[str]:
     """What was written, and how to look at it."""
     where = _shown(built.folder)
-    lines = [
-        f"Wrote {where}: {len(built.files)} files, {_mb(built.size_bytes)} on disk; "
-        f"a first visit downloads {_mb(built.first_load_bytes)}",
-    ]
+    first_visit = f"a first visit downloads {_mb(built.first_load_bytes)}"
+    model = built.manifest.get("model") or {}
+    on_hub = model.get("host") == bundle.HUB
+    if on_hub:
+        # The variant whose weight `first_load_bytes` is: the first one written.
+        from_hub = sum(next(iter(built.manifest["variants"].values()))["files"].values())
+        first_visit += f", {_mb(from_hub)} of it from Hugging Face"
+    lines = [f"Wrote {where}: {len(built.files)} files, {_mb(built.size_bytes)} on disk; {first_visit}"]
+    if on_hub:
+        lines.append(f"  host: hub: the model's files stay on Hugging Face ({model['repo']} at revision "
+                     f"{model['revision']}); a page loads the model only while huggingface.co answers")
     if built.removed:
         lines.append(f"  removed {len(built.removed)} files of the previous build that this one does not use")
     lines += [
