@@ -341,11 +341,95 @@ def test_labels_and_centres_that_do_not_fit_are_refused_before_anything_is_writt
 
 
 def test_a_recipe_without_a_folder_yet_and_a_missing_variant_are_refused(sources, out):
-    other = catalog.Candidate(entry(), catalog.Recipe("classify", "zero-shot", {}))
-    with pytest.raises(bundle.BundleError, match="zero-shot is not written yet"):
+    # Both recipes of the catalog have a folder; a recipe that comes later has none until it is written.
+    other = catalog.Candidate(entry(), catalog.Recipe("classify", "chat", {}))
+    with pytest.raises(bundle.BundleError, match="the recipe chat is not written yet"):
         sources.write(out, other)
     with pytest.raises(bundle.BundleError, match="tiny has no gpu variant"):
         sources.write(out, variants=("cpu", "gpu"))
+    assert not out.exists()
+    assert bundle.RECIPES == set(catalog.RECIPES)
+
+
+# --- the recipe zero-shot --------------------------------------------------------------------------
+
+
+def zero_shot(revision: str = REVISION) -> catalog.Candidate:
+    return catalog.Candidate(entry(revision), catalog.Recipe("classify", "zero-shot", {}))
+
+
+def test_the_folder_of_zero_shot_has_no_centres_and_the_hypotheses_are_in_the_manifest(sources, out):
+    built = sources.write(out, zero_shot(), names=[Label("shipping", "where it is"), Label("top_up"), Label("tech")],
+                          centres=None)
+
+    engine = f"vendor/transformers-{vendor.TRANSFORMERS_VERSION}/"
+    assert "data/labels.bin" not in tree(out) and not (out / "data").exists()
+    assert tree(out) >= {"cifarium.json", "cifarium.js", "cifarium-worker.js", "index.html", "LICENSES.txt",
+                         engine + vendor.WASM_BINARY_FILE, f"models/{REVISION}/org/tiny/onnx/model_quantized.onnx"}
+    manifest = json.loads((out / "cifarium.json").read_text(encoding="utf-8"))
+    assert manifest == built.manifest
+    assert manifest["recipe"] == "zero-shot" and manifest["data"] == {}
+    # One finished sentence for each label in the order of the labels, from the bench's rule: the
+    # name with spaces for underscores, no description.
+    assert manifest["params"] == {"hypotheses": ["This example is about shipping.", "This example is about top up.",
+                                                 "This example is about tech."]}
+    assert [label["name"] for label in manifest["labels"]] == ["shipping", "top_up", "tech"]
+    assert set(built.files) == tree(out)
+
+
+def test_the_hypotheses_of_the_manifest_are_those_the_bench_asks_in_the_language_of_the_labels(sources, out):
+    from cifarium.bench import hypotheses
+
+    labels = [Label("доставка"), Label("возврат"), Label("сбой")]
+
+    built = sources.write(out, zero_shot(), names=labels, centres=None)
+
+    assert built.manifest["params"]["hypotheses"] == hypotheses(labels) == [
+        "Этот текст про доставка.", "Этот текст про возврат.", "Этот текст про сбой."]
+
+
+def test_the_first_load_of_zero_shot_is_the_engine_and_the_files_of_the_model_and_nothing_else(sources, out):
+    built = sources.write(out, zero_shot(), centres=None)
+
+    engine = sum(ENGINE_SIZES.values())
+    model = sum({**MODEL_FILES, **GRAPH}.values())
+    assert bundle.first_load(built.manifest, "cpu")[0] == built.first_load_bytes == engine + model
+    # What the selection weighed before there was a folder is the same number.
+    assert bundle.manifest_of(zero_shot(), [Label(name) for name in LABELS], 0,
+                              engine_sizes=ENGINE_SIZES)["data"] == {}
+    assert bundle.centres_bytes(zero_shot(), 3) == 0
+
+
+def test_zero_shot_is_written_again_to_the_same_bytes_and_nothing_of_a_text_is_in_it(sources, tmp_path):
+    first, second = tmp_path / "one", tmp_path / "two"
+
+    sources.write(first, zero_shot(), centres=None)
+    sources.write(second, zero_shot(), centres=None)
+
+    assert tree(first) == tree(second)
+    for name in tree(first):
+        assert (first / name).read_bytes() == (second / name).read_bytes(), name
+
+
+def test_a_zero_shot_folder_over_a_folder_of_centres_removes_the_file_of_the_centres_and_keeps_the_developers(
+        sources, out):
+    sources.write(out)  # the earlier build: embed-centroid, with data/labels.bin
+    assert (out / "data" / "labels.bin").is_file()
+    (out / "data" / "mine.txt").write_text("keep", encoding="utf-8")
+
+    built = sources.write(out, zero_shot(), centres=None)
+
+    assert built.removed == ("data/labels.bin",)
+    assert not (out / "data" / "labels.bin").exists() and (out / "data" / "mine.txt").is_file()
+
+
+def test_the_centres_of_a_zero_shot_folder_are_refused_and_so_is_their_absence_for_vectors(sources, out):
+    with pytest.raises(bundle.BundleError, match="zero-shot has no centres"):
+        sources.write(out, zero_shot(), centres=CENTRES)
+    with pytest.raises(bundle.BundleError, match="needs the centres"):
+        sources.write(out, centres=None)
+    with pytest.raises(bundle.BundleError, match="at least two"):
+        sources.write(out, zero_shot(), names=["one"], centres=None)
     assert not out.exists()
 
 

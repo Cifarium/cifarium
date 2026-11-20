@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 import pytest
-from test_bundle import GRAPH, MODEL_FILES, Sources, fill, fill_engine
+from test_bundle import GRAPH, MODEL_FILES, Sources, fill, fill_engine, zero_shot
 from test_report import success as sample_report
 
 from cifarium import build, bundle, catalog, cli, config, exitcodes, paths, report, selection
@@ -192,12 +192,46 @@ def test_the_keys_of_the_manifest_are_the_contract(sources, tmp_path):
     ]
 
 
-def test_every_key_of_the_manifest_is_written_in_camel_case(sources, tmp_path):
-    manifest = sources.write(tmp_path / "out").manifest
+def test_the_keys_of_the_manifest_of_zero_shot_are_the_contract(sources, tmp_path):
+    # The recipe decides what is in `params` and `data` (ARCHITECTURE.md, section 7): zero-shot has the
+    # hypotheses in `params`, one for each label, and no file of data.
+    manifest = sources.write(tmp_path / "out", zero_shot(), centres=None).manifest
 
-    for path in key_paths(manifest):
-        for key in re.split(r"\.|\[\]", path):
-            assert key in ("", "*") or re.fullmatch(r"[a-z][a-zA-Z0-9]*", key), path
+    assert key_paths(manifest) == [
+        "cifarium",
+        "engine.executor.bytes",
+        "engine.executor.path",
+        "engine.library.bytes",
+        "engine.library.path",
+        "engine.loader.bytes",
+        "engine.loader.path",
+        "engine.onnxruntimeWeb",
+        "engine.transformers",
+        "format",
+        "labels[].description",
+        "labels[].name",
+        "model.license",
+        "model.path",
+        "model.repo",
+        "model.revision",
+        "params.hypotheses[]",
+        "recipe",
+        "task",
+        "variants.cpu.device",
+        "variants.cpu.dtype",
+        "variants.cpu.externalData",
+        "variants.cpu.files.*",
+        "variants.cpu.graph",
+    ]
+    assert manifest["data"] == {} and len(manifest["params"]["hypotheses"]) == len(manifest["labels"])
+
+
+def test_every_key_of_the_manifest_is_written_in_camel_case(sources, tmp_path):
+    for manifest in (sources.write(tmp_path / "one").manifest,
+                     sources.write(tmp_path / "two", zero_shot(), centres=None).manifest):
+        for path in key_paths(manifest):
+            for key in re.split(r"\.|\[\]", path):
+                assert key in ("", "*") or re.fullmatch(r"[a-z][a-zA-Z0-9]*", key), path
 
 
 def test_the_manifest_has_the_format_and_the_version_first_and_is_json_with_utf8_text(sources, tmp_path):

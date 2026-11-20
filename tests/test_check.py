@@ -567,6 +567,37 @@ def test_without_the_folder_and_the_examples_the_settings_name_them(built, tmp_p
     assert chrome.calls[0][1][0] == "text 0 of alpha"
 
 
+def test_the_folder_of_zero_shot_has_the_same_four_checks_and_its_examples_line_says_what_the_share_means(
+        built, tmp_path, chrome, capsys, monkeypatch):
+    edit(built, "cifarium.json", lambda manifest: manifest.update(
+        recipe="zero-shot", params={"hypotheses": ["This example is about alpha.", "This example is about beta."]},
+        data={}))
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "examples.jsonl").write_text(example_lines(), encoding="utf-8")
+    (project / "cifarium.yaml").write_text("task: classify\nexamples: examples.jsonl\noutput: ../out\n", encoding="utf-8")
+    monkeypatch.chdir(project)
+
+    assert read(built).recipe == "zero-shot"
+    code = check.run()
+    out = capsys.readouterr().out
+
+    assert code == exitcodes.DONE
+    # The model never saw these examples, so the share is the one the build counted; the vectors' line
+    # ("it has seen them") would be false for it.
+    assert "(the examples of the build: the model has not learned from them, so the share is the one the " \
+           "build counted, and a different one means the page asks the model something else" in out
+    assert "it has seen them" not in out
+    for line in ("ok    examples    20 of 20 examples right (100%)", "ok    isolation", "ok    speed", "ok    first load"):
+        assert line in out, line
+
+
+def test_what_the_share_on_the_examples_of_the_build_means_depends_on_the_recipe():
+    assert "it has seen them" in check.same_examples("embed-centroid")
+    assert "has not learned from them" in check.same_examples("zero-shot")
+    assert "new texts" in check.same_examples("embed-centroid") and "new texts" in check.same_examples("zero-shot")
+
+
 def test_examples_of_another_file_are_not_called_the_examples_of_the_build(built, examples, chrome, capsys):
     _, out, _ = run(built, examples, capsys)
 

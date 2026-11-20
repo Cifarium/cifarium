@@ -91,5 +91,13 @@ The first contracts. Nothing was published before, so nothing is a break.
   score; the examples teach it nothing, so none is left out) and gets its share and its `verdict`
   in the table and in `report.json` like any other candidate. Its time per example is the time of
   one text with all of its labels. `vectors` in its row means that the scores of the labels the
-  bench returned cannot be read; no new verdict word. The folder of this recipe is not written in
-  this version: a build that chooses it prints the table and the chosen model and ends with code 3.
+  bench returned cannot be read; no new verdict word.
+- The folder of the recipe `zero-shot`, which `build` writes with code 0 when it chooses that recipe:
+  `recipe` is `"zero-shot"` in the manifest, `params.hypotheses` lists one finished sentence for each
+  label in the order of `labels` (the runtime puts none together, and it asks the model what the bench
+  asked), `data` is empty and there is no `data/labels.bin`, `params` has no `pooling` or `prefix`.
+  The first load is the engine and the files of the model. The manifest of `embed-centroid` is as it
+  was. `cifarium.js` runs both recipes: `run` answers `{ label, score, scores }` for each, but the scale
+  of `score` is the recipe's: from -1 to 1 for `embed-centroid`, from 0 to 1 with all the scores
+  adding up to 1 for `zero-shot` (`info().recipe` says which; ARCHITECTURE.md, section 8). `check`
+  judges such a folder with the same four checks.

@@ -22,7 +22,7 @@ import numpy as np
 import cifarium
 
 from . import catalog, hub, paths, vendor
-from .bench import external_data_files, graph_name
+from .bench import external_data_files, graph_name, hypotheses
 from .config import Label
 
 FORMAT = 1
@@ -51,8 +51,13 @@ FIRST_LOAD_VARIANT = "cpu"
 Every visitor can run it and stage 1 builds nothing else (ARCHITECTURE.md, section 7)."""
 
 PARAMS = {"embed-centroid": ("pooling", "prefix")}
-"""The parameters of a recipe that go into the manifest. ``dimensions`` stays in the catalog: the
-runtime reads the length of a vector from the size of the centres file."""
+"""The parameters of a recipe's catalog entry that go into the manifest. ``dimensions`` stays in the
+catalog: the runtime reads the length of a vector from the size of the centres file. The recipe
+``zero-shot`` takes none from the catalog: its ``params`` are the hypotheses, made from the labels
+(:func:`params_of`)."""
+
+RECIPES = frozenset({"embed-centroid", "zero-shot"})
+"""Recipes whose folder :func:`write` writes: both recipes of the catalog (``catalog.RECIPES``)."""
 
 TEMPLATES = "templates"
 """Folder of the example page, the hosting settings and the license file under ``web/``."""
@@ -80,7 +85,7 @@ def write(
     folder: Path,
     candidate: catalog.Candidate,
     labels: Sequence[Label],
-    centres: np.ndarray,
+    centres: np.ndarray | None = None,
     *,
     variants: Sequence[str] = ("cpu",),
     engine_dir: Path | None = None,
@@ -90,10 +95,12 @@ def write(
 ) -> Built:
     """Write the build of ``candidate`` into ``folder`` and return what is there now.
 
-    ``labels`` are the labels of the settings, name and description, in their order, and
-    ``centres`` has one row for each, the way :func:`evaluate.centroids` gives them. They go into
-    the manifest; nothing of the examples does, and everything in the folder may be published
-    (ARCHITECTURE.md, section 7). ``variants`` are the variants of the entry that the bench has
+    ``labels`` are the labels of the settings, name and description, in their order. For the recipe
+    ``embed-centroid``, ``centres`` has one row for each, the way :func:`evaluate.centroids` gives
+    them, and goes into ``data/labels.bin``. The recipe ``zero-shot`` has no centres (it must not be
+    given any): its folder holds the hypotheses of the labels in the manifest instead. Labels, centres
+    and hypotheses go into the folder; nothing of the examples does, and everything in the folder may
+    be published (ARCHITECTURE.md, section 7). ``variants`` are the variants of the entry that the bench has
     checked. The engine and the model are copied from the cache (``engine_dir`` and ``model_dir``
     replace it); a file whose size is not the one the catalog or the pinned engine names is an
     error, because the manifest promises these sizes to the runtime.
@@ -111,9 +118,9 @@ def write(
     entry, recipe = candidate.entry, candidate.recipe
     labels = list(labels)
     names = [label.name for label in labels]
-    rows = _centres(names, centres)
-    if recipe.kind != "embed-centroid":
+    if recipe.kind not in RECIPES:
         raise BundleError(f"{entry.id}: the folder of the recipe {recipe.kind} is not written yet")
+    rows = _centres(names, centres) if recipe.kind == "embed-centroid" else _no_centres(names, centres)
     if not variants:
         raise BundleError(f"{entry.id}: a build needs at least one variant")
     for variant in variants:
@@ -125,7 +132,8 @@ def write(
     engine_dir = vendor.ensure_engine() if engine_dir is None else engine_dir
     model_dir = hub.model_dir(entry.repo) if model_dir is None else model_dir
 
-    manifest = manifest_of(candidate, labels, rows.nbytes, variants=variants, engine_sizes=engine_sizes)
+    manifest = manifest_of(candidate, labels, 0 if rows is None else rows.nbytes, variants=variants,
+                           engine_sizes=engine_sizes)
     before = _previous(folder / MANIFEST)
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -138,7 +146,8 @@ def write(
             for name, size in entry.files(variant).items():
                 _copy(model_dir / name, folder / model_path / entry.repo / name, size)
 
-        _write_bytes(folder / CENTRES_FILE, rows.tobytes())
+        if rows is not None:
+            _write_bytes(folder / CENTRES_FILE, rows.tobytes())
 
         runtime = paths.web_dir() / "runtime"
         for name in RUNTIME_FILES:
@@ -201,8 +210,8 @@ def manifest_of(
     ask it, so that what the selection weighs is what the build writes.
 
     ``centres_bytes`` is the size of the centres file: four bytes for each number of each label.
-    Only the recipe ``embed-centroid`` has such a file; a recipe the folder is not written for yet
-    has no data (:func:`write` refuses it) and its weight is that of the engine and the model.
+    Only the recipe ``embed-centroid`` has such a file. ``zero-shot`` has no file of data: its
+    hypotheses are in the ``params`` of the manifest, so its first load is the engine and the model.
     """
     entry, recipe = candidate.entry, candidate.recipe
     engine_path = f"vendor/transformers-{vendor.TRANSFORMERS_VERSION}/"
@@ -222,11 +231,25 @@ def manifest_of(
         "model": {"repo": entry.repo, "revision": entry.revision, "license": entry.license,
                   "path": f"models/{entry.revision}/"},
         "variants": {variant: variant_record(entry, variant) for variant in variants},
-        "params": {key: recipe.params[key] for key in PARAMS.get(recipe.kind, ())},
+        "params": params_of(candidate, labels),
         "engine": engine,
-        # The files of `data` depend on the recipe; embed-centroid has the centres only.
+        # The files of `data` depend on the recipe: embed-centroid has the centres, zero-shot none.
         "data": data,
     }
+
+
+def params_of(candidate: catalog.Candidate, labels: Sequence[Label]) -> dict[str, Any]:
+    """The ``params`` of the manifest: what the runtime needs to call the model besides its files.
+
+    ``embed-centroid``: the pooling and the prefix of the catalog's recipe. ``zero-shot``: the
+    hypotheses, one sentence for each label in the order of ``labels``, finished (``bench.hypotheses``:
+    the template of the labels' language with the label in it). The runtime puts none together, so
+    what it asks the model is what the bench asked, whatever the settings or the rule of the
+    template become later (ARCHITECTURE.md, section 3, "Рецепт 2")."""
+    recipe = candidate.recipe
+    if recipe.kind == "zero-shot":
+        return {"hypotheses": hypotheses(labels)}
+    return {key: recipe.params[key] for key in PARAMS.get(recipe.kind, ())}
 
 
 def centres_bytes(candidate: catalog.Candidate, labels: int) -> int:
@@ -327,10 +350,26 @@ def _license_of(engine_dir: Path, name: str) -> str:
     return text.replace("\r\n", "\n").strip("\n")
 
 
-def _centres(names: list[str], centres: np.ndarray) -> np.ndarray:
-    rows = np.asarray(centres, dtype="<f4")
+def _check_labels(names: list[str]) -> None:
     if len(names) < 2 or len(set(names)) != len(names):
         raise BundleError(f"the labels must be at least two and all different, got {names}")
+
+
+def _no_centres(names: list[str], centres: np.ndarray | None) -> None:
+    """The recipe ``zero-shot`` has no centres; being handed some is a caller's mistake that would
+    otherwise leave a file in the folder that the manifest does not name."""
+    _check_labels(names)
+    if centres is not None:
+        raise BundleError("the recipe zero-shot has no centres of labels: a folder of it holds the "
+                          "hypotheses in the manifest")
+    return None
+
+
+def _centres(names: list[str], centres: np.ndarray | None) -> np.ndarray:
+    _check_labels(names)
+    if centres is None:
+        raise BundleError("the recipe embed-centroid needs the centres of the labels")
+    rows = np.asarray(centres, dtype="<f4")
     if rows.ndim != 2 or rows.shape[0] != len(names) or rows.shape[1] < 1:
         raise BundleError(f"{len(names)} labels need one centre each, got an array of shape {rows.shape}")
     if not np.isfinite(rows).all():

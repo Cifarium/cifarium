@@ -41,7 +41,7 @@ export const FALLBACK_REASONS = Object.freeze([
 /** Every `phase` of a progress event today. New phases may be added. */
 export const PROGRESS_PHASES = Object.freeze(['download', 'prepare']);
 
-const TASKS = { classify: ['embed-centroid'] };
+const TASKS = { classify: ['embed-centroid', 'zero-shot'] };
 const POOLINGS = ['mean', 'cls', 'none'];
 const DEVICES = ['auto', 'wasm', 'webgpu'];
 /** Which `device` each variant of the manifest must have. */
@@ -80,10 +80,14 @@ const VARIANT_DEVICES = { cpu: 'wasm', gpu: 'webgpu' };
  * @property {{repo: string, revision: string, license: string, path: string}} model `path` is
  *   the folder the library reads models from; the files lie in `<path><repo>/`.
  * @property {{cpu?: Variant, gpu?: Variant}} variants
- * @property {{pooling: "mean"|"cls"|"none", prefix: string}} params
+ * @property {{pooling: "mean"|"cls"|"none", prefix: string}|{hypotheses: string[]}} params What
+ *   the recipe needs to call the model. "embed-centroid": `pooling` and `prefix`. "zero-shot":
+ *   `hypotheses`, one finished sentence for each label in the order of `labels`; the runtime
+ *   puts none together.
  * @property {{transformers: string, onnxruntimeWeb: string, library: FileRef, loader: FileRef,
  *   executor: FileRef}} engine
- * @property {{centres: FileRef}} data The files of the recipe; "embed-centroid" has the centres.
+ * @property {{centres?: FileRef}} data The files of the recipe: "embed-centroid" has the centres,
+ *   "zero-shot" none.
  */
 
 /**
@@ -131,7 +135,9 @@ const VARIANT_DEVICES = { cpu: 'wasm', gpu: 'webgpu' };
  * @property {string} cifarium Version of cifarium that made the build.
  * @property {number} format Manifest format.
  * @property {string} task
- * @property {string} recipe
+ * @property {string} recipe How the build names a label: "embed-centroid" (closeness to the
+ *   examples of each label) or "zero-shot" (whether a sentence about the label fits the text). It
+ *   also says what the `score` of `run()` means (see `Result`).
  * @property {string} model Model on Hugging Face, for example "Xenova/all-MiniLM-L6-v2".
  * @property {string} revision Commit of the model.
  * @property {string} license
@@ -158,9 +164,12 @@ const VARIANT_DEVICES = { cpu: 'wasm', gpu: 'webgpu' };
 /**
  * @typedef {Object} Result What run() answers for a classification.
  * @property {string} label The best label: the same as `scores[0].label`.
- * @property {number} score Its score. A larger score is closer; the scale depends on `recipe`
- *   (for "embed-centroid" it is the dot product of unit vectors, from -1 to 1), so compare
- *   scores of one build with each other and never with a number from another build.
+ * @property {number} score Its score. A larger score is better, but the scale depends on the
+ *   `recipe` of `info()`. "embed-centroid": the dot product of unit vectors, from -1 to 1, the
+ *   scores of the labels are independent of each other. "zero-shot": from 0 to 1, and the scores
+ *   of all the labels add up to 1, so a text that fits no label well still gives one of them most
+ *   of the 1, and a text that fits several splits it. Compare scores of one build with each
+ *   other and never with a number from another build or another recipe.
  * @property {Score[]} scores Every label, the best first. Equal scores keep the order of the
  *   settings.
  */
@@ -554,15 +563,23 @@ function checkManifest(manifest, url) {
   need(isObject(model) && isText(model.repo) && isText(model.revision) && isText(model.path)
     && typeof model.license === 'string', 'model: repo, revision, license and path');
   const params = manifest.params;
-  need(isObject(params) && POOLINGS.includes(params.pooling) && typeof params.prefix === 'string',
-    `params: pooling (${POOLINGS.join(', ')}) and prefix`);
+  const data = manifest.data;
+  if (manifest.recipe === 'zero-shot') {
+    // One finished sentence for each label, in the order of the labels; nothing in `data`.
+    need(isObject(params) && Array.isArray(params.hypotheses) && Array.isArray(labels)
+      && params.hypotheses.length === labels.length && params.hypotheses.every(isText),
+    'params: hypotheses, one sentence for each label');
+    need(isObject(data), 'data: an object');
+  } else {
+    need(isObject(params) && POOLINGS.includes(params.pooling) && typeof params.prefix === 'string',
+      `params: pooling (${POOLINGS.join(', ')}) and prefix`);
+    // The files of `data` depend on the recipe; this one needs the centres.
+    need(isObject(data) && isFile(data.centres), 'data: centres');
+  }
   const engine = manifest.engine;
   need(isObject(engine) && isText(engine.transformers) && isText(engine.onnxruntimeWeb)
     && isFile(engine.library) && isFile(engine.loader) && isFile(engine.executor),
     'engine: transformers, onnxruntimeWeb, library, loader and executor');
-  // The files of `data` depend on the recipe; this one needs the centres.
-  const data = manifest.data;
-  need(isObject(data) && isFile(data.centres), 'data: centres');
   const variants = manifest.variants;
   const named = isObject(variants) ? Object.keys(VARIANT_DEVICES).filter((name) => name in variants) : [];
   need(named.length > 0, 'variants: cpu or gpu');

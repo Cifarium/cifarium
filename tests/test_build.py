@@ -255,7 +255,8 @@ class Written:
     folder: Path
     candidate: catalog.Candidate
     labels: list[Label]
-    centres: np.ndarray
+    centres: np.ndarray | None
+    """None for the recipe zero-shot, whose folder has no centres."""
     reports: dict[str, bytes]
 
     @property
@@ -276,7 +277,7 @@ def chrome(monkeypatch):
         yield fake
 
     def fake_write(folder, candidate, labels, centres, **kwargs):
-        written.append(Written(Path(folder), candidate, list(labels), np.array(centres),
+        written.append(Written(Path(folder), candidate, list(labels), None if centres is None else np.array(centres),
                                dict(kwargs.get("reports") or {})))
         return bundle.Built(Path(folder), {}, ("cifarium.json", "index.html"), fake.removed,
                             first_load_bytes=51_200_000, size_bytes=52_000_000)
@@ -1008,7 +1009,7 @@ def test_a_zero_shot_candidate_asked_without_its_labels_is_a_defect(chrome):
         build.ChromeEmbed(chrome, lambda message: None)(nli(), ["about shipping"])
 
 
-def test_a_chosen_zero_shot_candidate_is_printed_and_the_build_stops_before_the_folder_with_code_3(
+def test_a_chosen_zero_shot_candidate_is_printed_and_its_folder_and_report_are_written_with_code_0(
         tmp_path, chrome, monkeypatch, capsys):
     only = nli()
     monkeypatch.setattr(catalog, "candidates", lambda task: (only,))
@@ -1016,15 +1017,40 @@ def test_a_chosen_zero_shot_candidate_is_printed_and_the_build_stops_before_the_
     code = build.run(write_task(tmp_path))
 
     out, err = capsys.readouterr()
-    assert code == exitcodes.ENVIRONMENT == 3
+    assert code == exitcodes.DONE == 0, err
     assert "nli-deberta-v3-xsmall: running 12 examples on the processor, 3 labels each" in out
     assert any(line.strip().startswith("nli-deberta-v3-xsmall  zero-shot") and "passed" in line
                for line in table_of(out))
     assert "Chosen: nli-deberta-v3-xsmall" in out and "accuracy      12 of 12 examples (100%)" in out
     assert "one thread    20.0 ms median of 5 examples" in out
-    assert "Vectors of the examples" not in out
-    assert ("FAILED: nli-deberta-v3-xsmall passed, but this version of cifarium cannot write the folder of "
-            "the recipe zero-shot yet.") in err
-    # Nothing is written: not the folder, and not a report that would speak of a folder.
-    assert chrome.written == [] and not (tmp_path / "cifarium-out").exists()
+    assert "Vectors of the examples" not in out and "cannot write the folder" not in err
+    assert "Wrote " in out
     assert [(job["operation"], job.get("threads")) for job in chrome.jobs] == [("zero-shot", None), ("zero-shot", 1)]
+    # The folder is asked for with the labels and no centres: a zero-shot folder has none to write.
+    [written] = chrome.written
+    assert written.candidate is only and written.names == list(TOPICS) and written.centres is None
+    # The report of the build is the one every other recipe gets, and its weight is the folder's.
+    document = json.loads(written.reports[bundle.REPORT_JSON])
+    assert (document["outcome"], document["exitCode"]) == ("built", 0)
+    chosen = document["chosen"]
+    assert (chosen["id"], chosen["recipe"]) == ("nli-deberta-v3-xsmall", "zero-shot")
+    load = chosen["firstLoad"]
+    assert load["dataBytes"] == 0 and load["bytes"] == load["engineBytes"] + load["modelBytes"]
+    assert load["bytes"] == bundle.first_load(
+        bundle.manifest_of(only, [Label(topic) for topic in TOPICS], 0), "cpu")[0]
+    [entry] = document["candidates"]
+    assert (entry["verdict"], entry["evaluation"]["correct"], entry["evaluation"]["total"]) == ("passed", 12, 12)
+
+
+def test_the_centres_of_a_folder_are_those_of_the_examples_for_vectors_and_none_for_scores(tmp_path):
+    items = Examples(path=tmp_path / "e.jsonl", labels=(Label("a"), Label("b")),
+                     items=(Example(1, "x", "a"), Example(2, "y", "a"), Example(3, "z", "b"), Example(4, "w", "b")))
+    vectors = np.array([[1, 0], [0, 1], [1, 1], [1, -1]], dtype=np.float64) / np.sqrt([[1], [1], [2], [2]])
+
+    centres = build.centres_of(make("v", 20), vectors, items)
+
+    assert centres is not None and centres.dtype == np.dtype("<f4") and centres.shape == (2, 2)
+    assert np.linalg.norm(centres, axis=1) == pytest.approx([1.0, 1.0], abs=1e-6)
+    assert centres[0] == pytest.approx(np.array([1, 1]) / np.sqrt(2), abs=1e-6)
+    # What the selection keeps for zero-shot is the scores of the labels: no centres come from them.
+    assert build.centres_of(nli(), np.array([[0.7, 0.3], [0.2, 0.8]]), items) is None

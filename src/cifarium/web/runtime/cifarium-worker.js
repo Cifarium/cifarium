@@ -14,12 +14,16 @@
 /** @typedef {import('./cifarium.js').Progress} Progress */
 /** @typedef {import('./cifarium.js').Fallback} Fallback */
 /** @typedef {import('./cifarium.js').Result} Result */
+/** @typedef {import('./cifarium.js').Score} Score */
 
 /** Weights that need the adapter's shader-f16. The library checks it only for fp16. */
 const HALF_PRECISION = new Set(['fp16', 'q4f16']);
 
 /** How far a centre's length may be from 1; Python writes them in float32. */
 const UNIT_TOLERANCE = 1e-3;
+
+/** The library's pipeline of each recipe (the operations of ARCHITECTURE.md, section 2). */
+const PIPELINES = { 'embed-centroid': 'feature-extraction', 'zero-shot': 'zero-shot-classification' };
 
 /** Short text for the trial run that load() makes on the chosen device. */
 const TRIAL_TEXT = 'cifarium';
@@ -54,17 +58,36 @@ class Retry extends Error {
 }
 
 /**
- * @typedef {Object} Model What run() needs, set by a successful load.
+ * What run() needs, set by a successful load: one of the two recipes.
+ * @typedef {Object} VectorModel The recipe "embed-centroid".
+ * @property {"embed-centroid"} recipe
  * @property {any} extractor A "feature-extraction" pipeline.
  * @property {string[]} labels
  * @property {Float32Array} centres labels × dims, one unit-length row per label.
  * @property {number} dims
  * @property {"mean"|"cls"|"none"} pooling
  * @property {string} prefix
+ *
+ * @typedef {Object} EntailmentModel The recipe "zero-shot".
+ * @property {"zero-shot"} recipe
+ * @property {any} classifier A "zero-shot-classification" pipeline.
+ * @property {string[]} labels
+ * @property {string[]} sentences The hypotheses of the manifest, ready to hand to the library: every
+ *   "$" doubled (see `passable`).
+ *
+ * @typedef {VectorModel|EntailmentModel} Model
  */
 
 /** @type {Model|null} */
 let model = null;
+
+/**
+ * The library puts each label into `hypothesis_template` with `String.prototype.replace`, which
+ * reads `$&`, `$1` and the like in what it inserts. With the template "{}" and every "$" doubled,
+ * what it checks is the hypothesis as the build wrote it. The same as the bench page does (web/bench/bench.js),
+ * so that a share counted on the bench is the share a site gets.
+ */
+const WHOLE = '{}';
 let queue = Promise.resolve();
 
 self.onmessage = (event) => {
@@ -250,8 +273,14 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
   }
   const address = (/** @type {string} */ path) => new URL(path, manifestUrl).href;
   const { engine, data } = manifest;
+  const zeroShot = manifest.recipe === 'zero-shot';
+  // The files of the recipe: the centres for "embed-centroid", none for "zero-shot".
+  const dataFiles = Object.values(data);
   const tally = new Tally(id, retry?.carry);
   const modelFolder = `${manifest.model.path}${manifest.model.repo}/`;
+  // Before anything is downloaded: a sentence the library would change is a failed load, not a
+  // build that answers about a sentence nobody wrote.
+  const sentences = zeroShot ? passable(/** @type {{hypotheses: string[]}} */ (manifest.params).hypotheses) : [];
 
   // The variant is chosen first, so that every file of this load is counted before the first
   // byte arrives: the "prepare" phase starts when the count is complete, and a count that
@@ -262,7 +291,7 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
   if (order.length === 0) {
     throw new Failure('load', `The model did not start: no variant could be tried${fallback ? `; ${fallback.message}` : ''}.`);
   }
-  for (const file of [engine.library, engine.loader, engine.executor, data.centres]) {
+  for (const file of [engine.library, engine.loader, engine.executor, ...dataFiles]) {
     tally.expect(file.path, file.bytes);
   }
   for (const [file, bytes] of Object.entries(order[0].variant.files)) {
@@ -278,7 +307,9 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
   tally.finish(engine.loader.path);
   const { env, pipeline } = library;
 
-  const { labels, centres, dims } = await readCentres(manifest, address, tally);
+  const { labels, centres, dims } = zeroShot
+    ? { labels: manifest.labels.map((label) => label.name), centres: new Float32Array(0), dims: 0 }
+    : await readCentres(manifest, address, tally);
 
   // Every file comes from this build: nothing from Hugging Face or a CDN. The models' folder
   // must be a path, not a full address: the library checks that a local file exists (it decides
@@ -301,10 +332,10 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
     for (const [file, bytes] of Object.entries(variant.files)) {
       tally.expect(modelFolder + file, bytes);
     }
-    let extractor = null;
+    let pipe = null;
     watch.problem = null;
     try {
-      extractor = await pipeline('feature-extraction', manifest.model.repo, {
+      pipe = await pipeline(PIPELINES[manifest.recipe], manifest.model.repo, {
         device: variant.device,
         dtype: variant.dtype,
         model_file_name: variant.graph,
@@ -321,10 +352,16 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
         },
       });
       // A card can fail on the first computation rather than on loading, or return NaN.
-      const trial = await toVector(extractor, manifest.params.prefix + TRIAL_TEXT, manifest.params.pooling);
-      scaleToUnit(trial);
-      if (trial.length !== dims) {
-        throw new Failure('load', `The model gives vectors of ${trial.length} numbers, the centres have ${dims}.`);
+      if (zeroShot) {
+        entailmentOf(pipe);
+        await scoreLabels(pipe, sentences, TRIAL_TEXT);
+      } else {
+        const { pooling, prefix } = /** @type {{pooling: "mean"|"cls"|"none", prefix: string}} */ (manifest.params);
+        const trial = await toVector(pipe, prefix + TRIAL_TEXT, pooling);
+        scaleToUnit(trial);
+        if (trial.length !== dims) {
+          throw new Failure('load', `The model gives vectors of ${trial.length} numbers, the centres have ${dims}.`);
+        }
       }
     } catch (error) {
       // A file that did not download is not a reason to try another variant: the next one
@@ -350,9 +387,14 @@ async function load({ id, manifestUrl, manifest, device, retry }) {
       throw new Retry(failed, [...tally.files]);
     }
 
-    model = { extractor, labels, centres, dims, pooling: manifest.params.pooling, prefix: manifest.params.prefix };
+    if (zeroShot) {
+      model = { recipe: 'zero-shot', classifier: pipe, labels, sentences };
+    } else {
+      const { pooling, prefix } = /** @type {{pooling: "mean"|"cls"|"none", prefix: string}} */ (manifest.params);
+      model = { recipe: 'embed-centroid', extractor: pipe, labels, centres, dims, pooling, prefix };
+    }
     tally.finishAll();
-    const bytes = [engine.library, engine.loader, engine.executor, data.centres]
+    const bytes = [engine.library, engine.loader, engine.executor, ...dataFiles]
       .reduce((sum, file) => sum + file.bytes, 0)
       + Object.values(variant.files).reduce((sum, size) => sum + size, 0);
     return {
@@ -572,26 +614,85 @@ async function run(text) {
   if (typeof text !== 'string' || text.trim() === '') {
     throw new Failure('input', 'run() needs a text with something in it.');
   }
-  const vector = await toVector(model.extractor, model.prefix + text, model.pooling);
-  scaleToUnit(vector);
-  if (vector.length !== model.dims) {
-    throw new Failure('run', `The model gave a vector of ${vector.length} numbers, the centres have ${model.dims}.`);
-  }
-  const scores = model.labels.map((label, row) => {
-    let score = 0;
-    const start = row * model.dims;
-    for (let column = 0; column < model.dims; column += 1) {
-      score += vector[column] * model.centres[start + column];
+  const loaded = model;
+  /** @type {Score[]} */
+  let scores;
+  if (loaded.recipe === 'zero-shot') {
+    const row = await scoreLabels(loaded.classifier, loaded.sentences, text);
+    scores = loaded.labels.map((label, index) => ({ label, score: row[index] }));
+  } else {
+    const vector = await toVector(loaded.extractor, loaded.prefix + text, loaded.pooling);
+    scaleToUnit(vector);
+    if (vector.length !== loaded.dims) {
+      throw new Failure('run', `The model gave a vector of ${vector.length} numbers, the centres have ${loaded.dims}.`);
     }
-    return { label, score };
-  });
+    scores = loaded.labels.map((label, row) => {
+      let score = 0;
+      const start = row * loaded.dims;
+      for (let column = 0; column < loaded.dims; column += 1) {
+        score += vector[column] * loaded.centres[start + column];
+      }
+      return { label, score };
+    });
+  }
   // Sorting is stable: labels with the same score stay in the order of the settings, so the
-  // best is the label listed first among equals, as in evaluate.predict.
+  // best is the label listed first among equals, as in evaluate.predict and evaluate.zero_shot.
   scores.sort((a, b) => b.score - a.score);
   if (scores.length === 0) {
     throw new Failure('run', 'No label got a score.');
   }
   return { label: scores[0].label, score: scores[0].score, scores };
+}
+
+/**
+ * The hypotheses of the manifest in the form the library takes: every "$" doubled. The library
+ * would read "$&" and the like in a label, so the sentence is checked here the way it will be
+ * built, and a sentence that would come out changed is a failed load.
+ * @param {string[]} hypotheses
+ * @returns {string[]}
+ */
+function passable(hypotheses) {
+  return hypotheses.map((hypothesis, index) => {
+    const passed = hypothesis.replace(/\$/g, '$$$$');
+    if (WHOLE.replace('{}', passed) !== hypothesis) {
+      throw new Failure('load', `The library would check ${JSON.stringify(WHOLE.replace('{}', passed))} instead of hypothesis ${index}.`);
+    }
+    return passed;
+  });
+}
+
+/**
+ * A model without an "entailment" label cannot check a hypothesis: the library would take logit 2
+ * and say so only in the console.
+ * @param {any} classifier A "zero-shot-classification" pipeline.
+ */
+function entailmentOf(classifier) {
+  const names = Object.keys(classifier.model.config.label2id ?? {});
+  if (!names.some((name) => name.toLowerCase() === 'entailment')) {
+    throw new Failure('load', `The model has no "entailment" label (it has ${names.join(', ') || 'none'}): it cannot check hypotheses.`);
+  }
+}
+
+/**
+ * One text, one score for each sentence, in the order of `sentences`. The same call as the bench
+ * page makes (web/bench/bench.js, `zeroShot`): one run of the model per sentence and the softmax of
+ * the entailment logits over them (`multi_label: false`), so the scores add up to 1. The library
+ * sorts the labels by score; this puts them back in order. Equal sentences get equal logits, so one
+ * score for a sentence is right for each of them.
+ * @param {any} classifier A "zero-shot-classification" pipeline.
+ * @param {string[]} sentences As `passable` made them.
+ * @param {string} text
+ * @returns {Promise<number[]>}
+ */
+async function scoreLabels(classifier, sentences, text) {
+  const output = await classifier(text, sentences, { hypothesis_template: WHOLE, multi_label: false });
+  /** @type {Map<string, number>} */
+  const scoreOf = new Map(output.labels.map((/** @type {string} */ label, /** @type {number} */ index) => [label, output.scores[index]]));
+  const row = sentences.map((sentence) => scoreOf.get(sentence));
+  if (!row.every((score) => Number.isFinite(score))) {
+    throw new Failure('run', `The model returned scores ${JSON.stringify(row)}.`);
+  }
+  return /** @type {number[]} */ (row);
 }
 
 /**

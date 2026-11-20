@@ -265,7 +265,9 @@ def _chosen_lines(report: Mapping[str, Any], chosen: Mapping[str, Any], row: Map
         f"The pass rate is {_percent(report['settings']['passRate'])}, so the margin is "
         f"{score['margin'] * 100:+.1f} points (one example is worth {100 / score['total']:.1f} points).",
         f"- First load: {_size(load['bytes'])} = {_size(load['engineBytes'])} engine + "
-        f"{_size(load['dataBytes'])} data of the labels + {_size(load['modelBytes'])} files of the model.",
+        # The recipe zero-shot has no data of the labels: its hypotheses are in the manifest itself.
+        + (f"{_size(load['dataBytes'])} data of the labels + " if load["dataBytes"] else "")
+        + f"{_size(load['modelBytes'])} files of the model.",
         f"- Model load: {speed['loadMs'] / 1000:.2f} s.",
         f"- Per example: median {_ms(speed['medianMs'])}, 95th percentile {_ms(speed['p95Ms'])}, "
         f"first call {_ms(speed['firstMs'])}.",

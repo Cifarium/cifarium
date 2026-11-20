@@ -47,10 +47,6 @@ SPEED_INPUTS = 20
 the first call warms up, the median is of the others. The same number is what a build on a small
 set measures anyway; on a set of a thousand it keeps the run from costing what the first one did."""
 
-WRITTEN_RECIPES = frozenset({"embed-centroid"})
-"""Recipes whose folder :func:`bundle.write` writes. A chosen candidate of another recipe (``zero-shot``,
-until its folder is written) ends the build with code 3 after the table and the chosen model."""
-
 LATENCY = "latency"
 """Verdict word of a candidate that passed on accuracy and was too slow. It lives here and not
 in :class:`selection.Verdict`, because the speed check is not part of the selection."""
@@ -405,21 +401,14 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
         _say(line)
 
     assert result.vectors is not None
-    if chosen.outcome.candidate.recipe.kind not in WRITTEN_RECIPES:
-        # The selection and the report know the recipe; the folder for it does not exist yet, and
-        # the folder of an earlier build in `output` stays as it was.
-        print(f"\nFAILED: {chosen.outcome.candidate.entry.id} passed, but this version of cifarium cannot "
-              f"write the folder of the recipe {chosen.outcome.candidate.recipe.kind} yet.", file=sys.stderr)
-        return exitcodes.ENVIRONMENT
-    names = [label.name for label in items.labels]
-    centres = evaluate.centroids(result.vectors, [item.expected for item in items.items], names)
+    candidate = chosen.outcome.candidate
+    centres = centres_of(candidate, result.vectors, items)
     # The manifest the folder will get, from the same function that writes it: the report names the
     # weight of the first load by its parts, and they are the folder's.
-    manifest = bundle.manifest_of(chosen.outcome.candidate, items.labels,
-                                  np.asarray(centres, dtype="<f4").nbytes)
+    manifest = bundle.manifest_of(candidate, items.labels, 0 if centres is None else centres.nbytes)
     document = reporting.of_build(settings, items, result, device=device, single=single, manifest=manifest)
     try:
-        built = bundle.write(settings.output, chosen.outcome.candidate, items.labels, centres,
+        built = bundle.write(settings.output, candidate, items.labels, centres,
                              reports=reporting.files(document))
     except bundle.BundleError as error:
         print(f"\nFAILED: {error}", file=sys.stderr)
@@ -428,6 +417,18 @@ def run(path: str | os.PathLike[str] = config.DEFAULT_FILE, *, headed: bool = Fa
     for line in describe_built(built):
         _say(line)
     return exitcodes.DONE
+
+
+def centres_of(candidate: catalog.Candidate, vectors: np.ndarray, items: examples.Examples) -> np.ndarray | None:
+    """The centres file of the folder of ``candidate``, as it will be written (float32): the mean
+    vector of the examples of each label, in the order of the labels (:func:`evaluate.centroids`).
+    ``None`` for the recipe ``zero-shot``: its folder has no such file, and what the selection kept
+    for it (``vectors``) are the scores of its labels, from which no centre is made."""
+    if candidate.recipe.kind != "embed-centroid":
+        return None
+    names = [label.name for label in items.labels]
+    centres = evaluate.centroids(vectors, [item.expected for item in items.items], names)
+    return np.asarray(centres, dtype="<f4")
 
 
 def describe_built(built: bundle.Built) -> list[str]:

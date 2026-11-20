@@ -67,6 +67,7 @@ class Folder:
 
     path: Path
     model: str
+    recipe: str
     built_by: str
     labels: tuple[config.Label, ...]
     pass_rate: float
@@ -131,6 +132,7 @@ def read_folder(folder: Path) -> Folder:
     return Folder(
         path=folder,
         model=str(model.get("repo", "?")),
+        recipe=str(manifest.get("recipe", "?")),
         built_by=str(manifest.get("cifarium", "?")),
         labels=labels,
         pass_rate=float(_number(report_path, report, "settings", "passRate")),
@@ -376,8 +378,7 @@ def run(
     _say("cifarium check")
     _say(f"  folder    {_shown(folder_info.path)}: {folder_info.model}, built by cifarium {folder_info.built_by}")
     _say(f"  examples  {len(items.items)} in {items.path.name}, {len(items.labels)} labels"
-         + (" (the examples of the build: it has seen them, so the share says the runtime agrees with it, "
-            "not how the model does on new texts)" if from_settings else ""))
+         + (f" ({same_examples(folder_info.recipe)})" if from_settings else ""))
     limit = folder_info.max_latency_ms
     _say(f"  promised  report.json: pass rate {_percent(folder_info.pass_rate)}, usual answer "
          + ("without a limit" if limit is None else f"up to {limit:g} ms")
@@ -433,6 +434,22 @@ def _prepare(
     items = example_files.read(examples_file, info.labels, settings_name=bundle.MANIFEST)
     headers = hosting.headers_of(info.path, hosting_name)
     return info, items, headers, examples is None
+
+
+def same_examples(recipe: str) -> str:
+    """What the examples of the build can say about the folder, which depends on the recipe.
+
+    ``embed-centroid``: the centres were made from these examples, so the share says the runtime
+    agrees with the build, not how the model does on new texts. ``zero-shot``: the model never saw
+    them, so the share is the one the build counted on the same texts with the same sentences, and a
+    different one means this page asks the model something else than the build did; for new texts
+    name a file with ``--examples``."""
+    if recipe == "zero-shot":
+        return ("the examples of the build: the model has not learned from them, so the share is the one "
+                "the build counted, and a different one means the page asks the model something else; "
+                "it is not how the model does on new texts")
+    return ("the examples of the build: it has seen them, so the share says the runtime agrees with it, "
+            "not how the model does on new texts")
 
 
 def describe_failure(failure: Mapping[str, Any], items: Sequence[example_files.Example]) -> str:

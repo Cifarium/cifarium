@@ -247,6 +247,22 @@ def test_the_json_is_utf8_with_the_format_and_the_version_first_and_the_same_eve
     assert document == success()
 
 
+def test_the_markdown_leaves_out_the_data_of_the_labels_when_the_recipe_has_none():
+    # The recipe zero-shot keeps its hypotheses in the manifest: no file of data, and "0 B data" would
+    # read as a file that is empty.
+    document = success()
+    assert "data of the labels" in report.markdown_text(document).decode("utf-8")
+    load = document["chosen"]["firstLoad"]
+    load["bytes"] -= load["dataBytes"]
+    load["dataBytes"] = 0
+
+    text = report.markdown_text(document).decode("utf-8")
+
+    assert "data of the labels" not in text
+    first_load = next(line for line in text.splitlines() if line.startswith("- First load: "))
+    assert first_load.endswith(" engine + " + report._size(load["modelBytes"]) + " files of the model.")
+
+
 def test_the_markdown_says_what_the_json_says():
     document = success()
 

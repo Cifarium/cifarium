@@ -26,6 +26,19 @@ def test_the_runtime_reads_manifest_format_1():
     assert constant("MANIFEST_FORMAT") == "1"
 
 
+def test_the_runtime_reads_both_recipes_of_the_catalog_and_the_worker_has_a_pipeline_for_each():
+    from cifarium import catalog
+
+    source = (RUNTIME / "cifarium.js").read_text(encoding="utf-8")
+    tasks = re.search(r"^const TASKS = \{ classify: \[(.*?)\] \};$", source, re.MULTILINE)
+    assert tasks and re.findall(r"'([^']+)'", tasks.group(1)) == ["embed-centroid", "zero-shot"]
+    assert set(re.findall(r"'([^']+)'", tasks.group(1))) == set(catalog.RECIPES)
+    worker = (RUNTIME / "cifarium-worker.js").read_text(encoding="utf-8")
+    pipelines = re.search(r"^const PIPELINES = \{ (.*?) \};$", worker, re.MULTILINE)
+    assert pipelines and dict(re.findall(r"'([^']+)': '([^']+)'", pipelines.group(1))) == {
+        "embed-centroid": "feature-extraction", "zero-shot": "zero-shot-classification"}
+
+
 def test_the_runtime_starts_the_worker_that_lies_next_to_it():
     source = (RUNTIME / "cifarium.js").read_text(encoding="utf-8")
     assert "new URL('./cifarium-worker.js', import.meta.url)" in source

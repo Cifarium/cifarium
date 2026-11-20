@@ -105,10 +105,17 @@ function megabytes(bytes) {
   return `${(bytes / 1e6).toFixed(1)} MB`;
 }
 
+// What `score` means depends on the recipe of the build (the `Result` of cifarium.js has the words).
+const SCALES = {
+  'embed-centroid': 'closeness of the text to the examples of each label, from -1 to 1',
+  'zero-shot': 'how well a sentence about each label fits the text, from 0 to 1, all labels together 1',
+};
+
 function describe(info) {
   const lines = [
     `model         ${info.model} (${info.license})`,
     `labels        ${info.labels.map((label) => label.name).join(', ')}`,
+    `score         ${SCALES[info.recipe] ?? info.recipe}`,
     `device        ${info.device}, ${info.threads} thread${info.threads === 1 ? '' : 's'}`,
     `first visit   ${megabytes(info.bytes)}`,
     `built by      cifarium ${info.cifarium}, runtime ${info.runtime}`,
