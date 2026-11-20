@@ -9,9 +9,11 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from cifarium import config, examples
+from cifarium import catalog, config, examples
+from cifarium.bench import embed_job
 
 FOLDER = Path(__file__).resolve().parents[1] / "examples"
 PARTS = ("english", "russian")
@@ -130,6 +132,37 @@ def test_stratified_keeps_the_share_of_every_label_by_largest_remainders():
     even = ["a"] * 7 + ["b"] * 7 + ["c"] * 7
     assert Counter(even[i] for i in measure.stratified(even, ["a", "b", "c"], 20, random.Random(1))) == {
         "a": 7, "b": 7, "c": 6}
+
+
+def test_the_measurement_takes_the_models_that_make_vectors_and_no_other_recipe():
+    measure = script("measure")
+    everything = catalog.candidates("classify")
+
+    taken = measure.vector_candidates()
+
+    # The catalog has a model of the recipe zero-shot, which the build runs but this script cannot.
+    assert {"embed-centroid", "zero-shot"} <= {c.recipe.kind for c in everything}
+    assert taken and {c.recipe.kind for c in taken} == {"embed-centroid"}
+    assert [c.entry.id for c in taken] == [c.entry.id for c in everything if c.recipe.kind == "embed-centroid"]
+    for candidate in taken:  # `embed_job` refuses a recipe that is not vectors, with ValueError
+        embed_job(candidate.entry, candidate.recipe, ["a text"])
+
+
+@pytest.mark.parametrize("license", ["permissive", "any"])
+def test_the_choice_of_the_measurement_never_asks_for_the_scores_of_a_zero_shot_model(license):
+    measure = script("measure")
+    pool = measure.load_pool("english")
+    candidates = measure.vector_candidates()
+    rng = np.random.default_rng(0)
+    vectors = {}
+    for candidate in candidates:
+        raw = rng.normal(size=(len(pool.texts), candidate.recipe.params["dimensions"]))
+        vectors[("english", *measure.candidate_key(candidate))] = (
+            raw / np.linalg.norm(raw, axis=1, keepdims=True)).astype(np.float32)
+
+    # Random vectors pass nobody, so the walk reaches every candidate and asks for its vectors; a
+    # zero-shot one would get the labels as a third argument, or no key in `vectors`.
+    assert measure.choose(pool, list(range(measure.SAMPLE_SIZE)), license, candidates, vectors) is None
 
 
 def test_stratified_refuses_a_sample_that_leaves_a_label_with_one_example():

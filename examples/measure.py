@@ -38,6 +38,7 @@ from cifarium.bench import decode_vectors, embed_job, open_bench
 HERE = Path(__file__).resolve().parent
 PARTS = ("english", "russian")
 LICENSES = ("permissive", "any")
+VECTOR_RECIPE = "embed-centroid"
 
 SEED = 2026
 RANDOM_SAMPLES = 5
@@ -96,18 +97,27 @@ def main() -> int:
         stream.reconfigure(encoding="utf-8", errors="replace")
 
     pools = [load_pool(part) for part in ((args.part,) if args.part else PARTS)]
-    candidates = catalog.candidates("classify")
-    ready = [c for c in candidates if c.recipe.kind in selection.READY_RECIPES]
-    vectors, timings = collect(pools, ready, args.refresh)
+    candidates = vector_candidates()
+    vectors, timings = collect(pools, candidates, args.refresh)
 
     lines: list[str] = []
     for pool in pools:
-        lines += report_part(pool, candidates, ready, vectors, timings)
+        lines += report_part(pool, candidates, vectors, timings)
     text = "\n".join(lines)
     print(text)
     if args.report:
         args.report.write_text(text + "\n", encoding="utf-8", newline="\n")
     return 0
+
+
+def vector_candidates() -> list[catalog.Candidate]:
+    """The models this measurement is about: the ones that turn a text into a vector (``embed-centroid``).
+
+    Not everything ``selection.READY_RECIPES`` lets the build run: ``zero-shot`` is ready there too, but
+    its job gives scores of labels, not vectors (``embed_job`` refuses it) and the selection asks its
+    function for them with the labels. The measurement keeps vectors and takes centres from them, so
+    only these models go in, to ``collect`` and to ``selection.select`` alike."""
+    return [c for c in catalog.candidates("classify") if c.recipe.kind == VECTOR_RECIPE]
 
 
 def load_pool(part: str) -> Pool:
@@ -127,9 +137,9 @@ def load_pool(part: str) -> Pool:
 
 
 def collect(
-    pools: Sequence[Pool], ready: Sequence[catalog.Candidate], refresh: bool
+    pools: Sequence[Pool], candidates: Sequence[catalog.Candidate], refresh: bool
 ) -> tuple[dict[tuple[str, str, str], np.ndarray], dict[tuple[str, str, str], list[dict]]]:
-    """Vectors and bench times of every ready candidate on every part: from the cache, or counted now.
+    """Vectors and bench times of every candidate on every part: from the cache, or counted now.
 
     The bench is started only when something is missing.
     """
@@ -137,7 +147,7 @@ def collect(
     timings: dict[tuple[str, str, str], list[dict]] = {}
     missing = []
     for pool in pools:
-        for candidate in ready:
+        for candidate in candidates:
             key = (pool.part, *candidate_key(candidate))
             loaded = None if refresh else read_cache(pool, candidate)
             if loaded is None:
@@ -267,12 +277,12 @@ def choose(pool: Pool, sample: Sequence[int], license: str, candidates, vectors)
 # --- the report -------------------------------------------------------------------------------------
 
 
-def report_part(pool, candidates, ready, vectors, timings) -> list[str]:
+def report_part(pool, candidates, vectors, timings) -> list[str]:
     rate = pool.settings.pass_rate
     samples = samples_of(pool)
-    ids = [c.entry.id for c in ready]
+    ids = [c.entry.id for c in candidates]
     scores = {(s, c.entry.id): score(pool, vectors[(pool.part, *candidate_key(c))], sample)
-              for s, sample in enumerate(samples) for c in ready}
+              for s, sample in enumerate(samples) for c in candidates}
     held_total = len(pool.texts) - SAMPLE_SIZE
     counts = {name: pool.expected.count(name) for name in pool.names}
     out = [f"## {pool.part}: {len(pool.texts)} examples, labels {counts}; "
@@ -309,7 +319,7 @@ def report_part(pool, candidates, ready, vectors, timings) -> list[str]:
     out += table(["sample"] + [f"license: {lic}" for lic in LICENSES], rows) + [""]
 
     out += verdict(pool, samples, picks, scores)
-    out += timing_lines(pool, ready, timings)
+    out += timing_lines(pool, candidates, timings)
     return out
 
 
@@ -332,11 +342,11 @@ def verdict(pool, samples, picks, scores) -> list[str]:
     return out + [""]
 
 
-def timing_lines(pool, ready, timings) -> list[str]:
+def timing_lines(pool, candidates, timings) -> list[str]:
     out = [f"Time to check one candidate on the repository's {pool.build_count} examples "
            "(model files already in the cache; a new tab, the model, the examples), and over the rest:", ""]
     rows = []
-    for candidate in ready:
+    for candidate in candidates:
         chunks = timings[(pool.part, *candidate_key(candidate))]
         first, rest = chunks[0], chunks[1:]
         per_example = [chunk["median_ms"] for chunk in chunks]
