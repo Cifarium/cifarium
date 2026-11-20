@@ -981,7 +981,9 @@ def test_a_zero_shot_candidate_runs_every_text_with_the_hypotheses_of_its_labels
     assert job["hypotheses"] == ["This example is about shipping.", "This example is about returns.",
                                  "This example is about technical."]
     assert scores.shape == (3, 3) and np.argmax(scores, axis=1).tolist() == [0, 1, 0]
-    assert lines == ["  nli-deberta-v3-xsmall: running 3 examples on the processor, 3 labels each"]
+    # "downloading" comes before it only on a machine without the model in its cache (a runner).
+    assert lines[-1] == "  nli-deberta-v3-xsmall: running 3 examples on the processor, 3 labels each"
+    assert all("running" not in line for line in lines[:-1])
     # The cache keeps vectors only: nothing is read, counted or written for the scores.
     assert (embed.reused, embed.computed) == (0, 0)
     assert not (tmp_path / "results").exists()
