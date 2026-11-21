@@ -56,6 +56,8 @@ def key_paths(value, prefix: str = "") -> list[str]:
 REPORT_KEYS = [
     "candidates[].evaluation.accuracy",
     "candidates[].evaluation.correct",
+    "candidates[].evaluation.interval.high",
+    "candidates[].evaluation.interval.low",
     "candidates[].evaluation.margin",
     "candidates[].evaluation.misses[].expected",
     "candidates[].evaluation.misses[].expectedScore",
@@ -433,7 +435,8 @@ def test_the_help_of_check_gives_the_meaning_of_each_code_in_the_words_of_check(
 
     assert ("Exit codes: 0 the folder passed, 1 it did not pass (the lines before the message say which "
             "check failed), 2 the folder, its report, the examples or the command line are wrong, 3 the "
-            "environment failed (Chrome, the disk).") in text
+            "environment failed (Chrome, the disk, and for a folder with host: hub the network to Hugging "
+            "Face).") in text
 
 
 def test_the_commands_are_these():

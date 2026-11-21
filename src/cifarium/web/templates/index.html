@@ -9,6 +9,9 @@
   (the files of this folder, nothing else), the next ones name the label of the text.
   Every build writes this file again, so copy it before you change it. Serve the folder over
   http or https: a page opened from file:// cannot start the background thread.
+  Its script and style are inline, so a Content-Security-Policy with `script-src 'self'` stops this
+  page; the model itself runs under such a policy from a script file of your own page (the comments
+  of hosting/_headers say what it needs).
 -->
 <style>
   :root {

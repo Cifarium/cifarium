@@ -13,6 +13,7 @@ paths, no names, no memory sizes. ARCHITECTURE.md, section 9 ("The report"), has
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -38,6 +39,25 @@ NO_MODEL = "no-model"
 SHARE_DIGITS = 4
 SCORE_DIGITS = 4
 MS_DIGITS = 2
+
+INTERVAL_Z = 1.959964
+"""z of the two-sided 95 % interval of a share."""
+
+
+def interval(correct: int, total: int) -> tuple[float, float]:
+    """The 95 % Wilson interval of a share of ``correct`` of ``total``: where the share on new texts of
+    the same kind can lie, given only these. Twenty examples cannot tell a model of 80 % from one of
+    90 % (ARCHITECTURE.md, section 3, "The golden task"): 19 of 20 gives 76 to 99 %. The share of the
+    build leaves each example out once, which is not quite a draw of independent texts; the
+    interval is the size of the noise, not an exact bound."""
+    if total < 1 or not 0 <= correct <= total:
+        raise ValueError(f"no share of {correct} of {total}")
+    share = correct / total
+    z2 = INTERVAL_Z * INTERVAL_Z
+    denominator = 1 + z2 / total
+    centre = (share + z2 / (2 * total)) / denominator
+    half = INTERVAL_Z * math.sqrt(share * (1 - share) / total + z2 / (4 * total * total)) / denominator
+    return max(0.0, centre - half), min(1.0, centre + half)
 
 
 def device_of(info: Mapping[str, Any], headless: bool) -> dict[str, Any]:
@@ -163,10 +183,16 @@ def _candidate(row: Row, items: Sequence[examples.Example]) -> dict[str, Any]:
             "accuracy": _round(score.accuracy, SHARE_DIGITS),
             # Negative when the candidate fell short of the pass rate.
             "margin": _round(score.accuracy - score.pass_rate, SHARE_DIGITS),
+            "interval": _interval(score.correct, score.total),
             "misses": [_miss(miss, items) for miss in score.misses],
         },
         "speed": None if row.speed is None else _speed(row.speed),
     }
+
+
+def _interval(correct: int, total: int) -> dict[str, float]:
+    low, high = interval(correct, total)
+    return {"low": _round(low, SHARE_DIGITS), "high": _round(high, SHARE_DIGITS)}
 
 
 def _miss(miss: Any, items: Sequence[examples.Example]) -> dict[str, Any]:
@@ -264,6 +290,7 @@ def _chosen_lines(report: Mapping[str, Any], chosen: Mapping[str, Any], row: Map
         f"- Examples right: {score['correct']} of {score['total']} ({_percent(score['accuracy'])}). "
         f"The pass rate is {_percent(report['settings']['passRate'])}, so the margin is "
         f"{score['margin'] * 100:+.1f} points (one example is worth {100 / score['total']:.1f} points).",
+        _new_texts_line(score, report["settings"]["passRate"]),
         f"- First load: {_size(load['bytes'])} = {_size(load['engineBytes'])} engine + "
         # The recipe zero-shot has no data of the labels: its hypotheses are in the manifest itself.
         + (f"{_size(load['dataBytes'])} data of the labels + " if load["dataBytes"] else "")
@@ -288,6 +315,20 @@ def _chosen_lines(report: Mapping[str, Any], chosen: Mapping[str, Any], row: Map
             lines.append(f"- Warning: in one thread the usual answer takes {_ms(one['medianMs'])}, over the "
                          "limit: a host without the isolation headers (GitHub Pages) misses it.")
     return lines
+
+
+def _new_texts_line(score: Mapping[str, Any], pass_rate: float) -> str:
+    """What the share of the examples says of new texts: the interval, and whether it promises the pass
+    rate. A low end under the pass rate is the usual case with 20 examples, and the line says what to do."""
+    low, high = score["interval"]["low"], score["interval"]["high"]
+    said = (f"- On new texts: from {_percent(low)} to {_percent(high)} (the 95% interval for "
+            f"{score['correct']} of {score['total']})")
+    if low + 1e-9 >= pass_rate:
+        return said + ", over the pass rate even at its low end."
+    return (said + f". **Warning:** these examples are too few to promise the pass rate of {_percent(pass_rate)} "
+            "on texts the build has not seen. Hold some examples back from the build and run "
+            "`cifarium check --examples <file>` on them; four times as many examples make the interval "
+            "about half as wide.")
 
 
 def _table(candidates: Sequence[Mapping[str, Any]]) -> list[str]:

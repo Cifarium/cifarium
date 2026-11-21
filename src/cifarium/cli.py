@@ -22,7 +22,7 @@ EXIT_CODES_HELP = (
 CHECK_EXIT_CODES_HELP = (
     "Exit codes: 0 the folder passed, 1 it did not pass (the lines before the message say which "
     "check failed), 2 the folder, its report, the examples or the command line are wrong, 3 the "
-    "environment failed (Chrome, the disk)."
+    "environment failed (Chrome, the disk, and for a folder with host: hub the network to Hugging Face)."
 )
 
 

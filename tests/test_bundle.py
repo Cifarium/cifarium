@@ -825,6 +825,20 @@ def test_every_hosting_file_keeps_only_vendor_and_models_for_a_year(sources, out
             assert "immutable" not in cache and "max-age=31536000" not in cache, f"{name}: {path}"
 
 
+@pytest.mark.parametrize("name", sorted(READERS))
+def test_no_hosting_file_sets_a_content_security_policy_and_the_comments_say_what_one_needs(sources, out, name):
+    # A policy is the site's: one from cifarium would stop the inline script of index.html and add to
+    # the site's own (ARCHITECTURE.md, section 1.6). The files with comments name what it needs.
+    sources.write(out)
+    text = (out / "hosting" / name).read_text(encoding="utf-8")
+
+    for path in ["/", *("/" + file for file in sorted(tree(out)))]:
+        assert "Content-Security-Policy" not in READERS[name](text, path), f"{name}: {path}"
+    if name != "vercel.json":  # JSON has no comments
+        for words in ("'wasm-unsafe-eval'", "https://huggingface.co https://*.hf.co", "no 'unsafe-eval'"):
+            assert words in text, f"{name}: {words}"
+
+
 def rule_paths(name: str) -> list:
     """The paths a hosting file puts a rule on, in the file's order."""
     text = (paths.web_dir() / "templates" / "hosting" / name).read_text(encoding="utf-8")

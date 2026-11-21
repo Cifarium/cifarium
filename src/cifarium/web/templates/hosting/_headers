@@ -15,6 +15,19 @@
 # vendor/ and models/ have the version in their paths, so their files never change at an
 # address and may be kept for a year. Nothing else here may be: cifarium.json, cifarium.js,
 # cifarium-worker.js, index.html and data/ change at the same address when you build again.
+#
+# A Content-Security-Policy is your site's and is not set here. The model needs no 'unsafe-eval'
+# and no 'unsafe-inline'; a strict policy on every file of the folder works:
+#   Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'
+# With `host: hub` the worker downloads the model from Hugging Face and its CDN, so add
+#   connect-src 'self' https://huggingface.co https://*.hf.co
+# 'wasm-unsafe-eval' is needed where WebAssembly is compiled: on cifarium-worker.js and vendor/
+# if the policy reaches them. index.html has its script inline, which `script-src 'self'` stops:
+# under such a policy run the model from a script file of your own page. Trusted Types
+# (`require-trusted-types-for`) stop the worker from starting. Over plain http on a host other
+# than localhost the page is not a secure context: the two headers below are ignored, so the
+# model computes in one thread, and without the browser store (Cache API) the runtime keeps
+# nothing between visits. Serve the site over https.
 
 /
   Cross-Origin-Opener-Policy: same-origin

@@ -200,6 +200,39 @@ def test_the_share_of_right_answers_meets_the_pass_rate_of_the_report_exactly_or
     assert f"{20 - wrong} of 20 examples right" in result.text and "pass rate 85%" in result.text
 
 
+def test_on_texts_the_build_has_not_seen_the_line_gives_the_interval_and_the_rule_stays_the_same(built):
+    folder = folder_of(built)
+    items = config_items(["alpha", "beta"] * 50)
+    answers = [item.expected for item in items]
+    for k in range(17):  # 83 of 100, the share of all-MiniLM on heldout.jsonl of the golden task
+        answers[k] = "beta" if answers[k] == "alpha" else "alpha"
+
+    found = check.judge(folder, items, answers, measures(folder), hosting_file="_headers", new_texts=True)
+    result = next(item for item in found if item.name == "examples")
+
+    # The rule is the one of the build: under the pass rate is FAIL, whatever the interval says.
+    assert result.status == FAIL
+    assert result.text.startswith("83 of 100 examples right (83%), pass rate 85%, on texts like these "
+                                  "74.5% to 89.1% (the 95% interval): the folder does not reach")
+    assert result.text.endswith("though the interval reaches it: more held-back examples would tell")
+    # The examples of the build say nothing of new texts, so their line has no interval.
+    same = next(item for item in check.judge(folder, items, answers, measures(folder), hosting_file="_headers")
+                if item.name == "examples")
+    assert "interval" not in same.text
+
+
+def test_a_share_whose_interval_stays_under_the_pass_rate_does_not_say_more_examples_would_tell(built):
+    folder = folder_of(built)
+    items = config_items(["alpha", "beta"] * 50)
+    answers = ["beta" if item.expected == "alpha" else "alpha" for item in items[:40]] + \
+        [item.expected for item in items[40:]]  # 60 of 100
+
+    found = check.judge(folder, items, answers, measures(folder), hosting_file="_headers", new_texts=True)
+    result = next(item for item in found if item.name == "examples")
+
+    assert result.status == FAIL and "more held-back examples" not in result.text
+
+
 def test_a_page_that_is_not_isolated_fails_and_names_the_headers_the_file_must_set(built):
     result = finding(folder_of(built), "isolation", page_isolated=False, worker_isolated=False, threads=1)
 

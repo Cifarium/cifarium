@@ -134,6 +134,46 @@ def test_the_margin_over_the_pass_rate_is_shown_and_is_negative_for_a_model_that
     assert str(report._round(-0.00001, 4)) == "0.0"
 
 
+@pytest.mark.parametrize("correct, total, low, high", [
+    # The numbers of the golden task (ARCHITECTURE.md, section 3): twenty in the build, a hundred held back.
+    (19, 20, 0.7639, 0.9911), (17, 20, 0.6396, 0.9476), (20, 20, 0.8389, 1.0), (83, 100, 0.7445, 0.8911),
+    (0, 5, 0.0, 0.4345)])
+def test_the_interval_of_a_share_is_the_95_percent_wilson_interval(correct, total, low, high):
+    found = report.interval(correct, total)
+
+    assert found == pytest.approx((low, high), abs=1e-4)
+    assert 0.0 <= found[0] <= correct / total <= found[1] <= 1.0
+
+
+@pytest.mark.parametrize("correct, total", [(1, 0), (-1, 5), (6, 5)])
+def test_an_interval_of_no_share_is_refused(correct, total):
+    with pytest.raises(ValueError, match="no share"):
+        report.interval(correct, total)
+
+
+def test_every_scored_candidate_has_the_interval_of_its_share_and_the_markdown_warns_when_it_is_too_wide():
+    document = success()
+    rows = by_id(document)
+
+    assert rows["c"]["evaluation"]["interval"] == {"low": 0.699, "high": 0.9721}  # 18 of 20
+    assert rows["b"]["evaluation"]["interval"]["high"] < 0.85
+    assert rows["d"]["evaluation"] is None
+    text = report.markdown_text(document).decode("utf-8")
+    line = next(line for line in text.splitlines() if line.startswith("- On new texts: "))
+    # Twenty examples cannot promise 85 %: the line says so and what to do.
+    assert line.startswith("- On new texts: from 69.9% to 97.2% (the 95% interval for 18 of 20). **Warning:**")
+    assert "`cifarium check --examples <file>`" in line
+
+
+def test_an_interval_over_the_pass_rate_at_its_low_end_gives_no_warning():
+    document = of(build({"a": (good(), 1.0)}, pass_rate=0.8), pass_rate=0.8)  # 20 of 20: from 83.9 %
+    text = report.markdown_text(document).decode("utf-8")
+
+    assert "- On new texts: from 83.9% to 100% (the 95% interval for 20 of 20), over the pass rate even at its " \
+           "low end." in text
+    assert "Warning:" not in text
+
+
 def test_the_pass_rate_stays_a_plain_share_and_the_margin_only_shows():
     # 17 of 20 is exactly 0.85: it passes, with margin 0 (decided on 17.11.2026).
     vectors = good()

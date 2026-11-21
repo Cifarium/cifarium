@@ -117,3 +117,12 @@ The first contracts. Nothing was published before, so nothing is a break.
   or another host no longer leaves the old files there. It keeps the list of what its folder stored
   under the address of the manifest with `?cifarium-cached-files`, and touches nothing else in the
   store.
+- `report.json` gives every scored candidate `evaluation.interval` with `low` and `high`: the 95 %
+  Wilson interval of its share, where the share on new texts of the same kind may lie (shares from 0
+  to 1). `report.md` warns when its low end is under the pass rate: twenty examples cannot promise
+  85 % (19 of 20 gives 76 to 99 %), and only examples the build has not seen, through
+  `cifarium check --examples`, tell. Nothing that decides changed: the selection and `check` still
+  compare the plain share with `pass_rate`, and the defaults stay as they are, measured on the golden
+  task (ARCHITECTURE.md, section 3). On a file of `--examples` the line of `check` gives the interval
+  too. The help of `check` names the network to Hugging Face for a folder with `host: hub` under
+  code 3.

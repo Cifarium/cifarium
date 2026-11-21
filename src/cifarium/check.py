@@ -247,10 +247,12 @@ def judge(
     measures: Measures,
     *,
     hosting_file: str,
+    new_texts: bool = False,
 ) -> list[Finding]:
-    """The four findings. ``labels`` are the page's answers, one for each of ``items``."""
+    """The four findings. ``labels`` are the page's answers, one for each of ``items``. ``new_texts``:
+    the examples are not the build's, so the line of the examples gives the interval of the share too."""
     return [
-        _judge_examples(folder, items, labels),
+        _judge_examples(folder, items, labels, new_texts=new_texts),
         _judge_isolation(measures, hosting_file),
         _judge_speed(folder, measures),
         _judge_first_load(folder, measures),
@@ -261,13 +263,23 @@ def hits(items: Sequence[example_files.Example], labels: Sequence[str]) -> int:
     return sum(1 for item, label in zip(items, labels) if item.expected == label)
 
 
-def _judge_examples(folder: Folder, items: Sequence[example_files.Example], labels: Sequence[str]) -> Finding:
+def _judge_examples(folder: Folder, items: Sequence[example_files.Example], labels: Sequence[str], *,
+                    new_texts: bool = False) -> Finding:
+    """The share against the pass rate of the report, by the rule of ``selection.passes``. On texts the
+    build has not seen the line also gives the 95 % interval of the share (``report.interval``): 83 of
+    100 fails 85 %, but the interval, 74 to 89 %, says that more texts would be needed to be sure."""
     correct, total = hits(items, labels), len(items)
     share = correct / total
     text = f"{correct} of {total} examples right ({_percent(share)}), pass rate {_percent(folder.pass_rate)}"
+    low, high = reporting.interval(correct, total)
+    if new_texts:
+        text += f", on texts like these {_percent(low)} to {_percent(high)} (the 95% interval)"
     if share + 1e-9 >= folder.pass_rate:
         return Finding("examples", OK, text)
-    return Finding("examples", FAIL, text + ": the folder does not reach the pass rate it was built for")
+    text += ": the folder does not reach the pass rate it was built for"
+    if new_texts and high + 1e-9 >= folder.pass_rate:
+        text += ", though the interval reaches it: more held-back examples would tell"
+    return Finding("examples", FAIL, text)
 
 
 def _judge_isolation(measures: Measures, hosting_file: str) -> Finding:
@@ -417,7 +429,8 @@ def run(
     labels = [answer["label"] for answer in outcome["result"]["answers"]]
     for line in describe_measures(measures):
         _say(f"  {line}")
-    findings = judge(folder_info, items.items, labels, measures, hosting_file=hosting_file)
+    findings = judge(folder_info, items.items, labels, measures, hosting_file=hosting_file,
+                     new_texts=not from_settings)
     _say("\nChecks:")
     for finding in findings:
         _say(f"  {finding.status:<5} {finding.name:<11} {finding.text}")
